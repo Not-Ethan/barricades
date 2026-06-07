@@ -1,11 +1,13 @@
 from agents.random_agent import RandomAgent
 from agents.greedy_agent import GreedyAgent
 from agents.minimax_agent import MinimaxAgent
+from agents.mcts_agent import MCTSAgent
 
 _FACTORIES = {
     "random": RandomAgent,
     "greedy": GreedyAgent,
     "minimax": MinimaxAgent,
+    "mcts": MCTSAgent,
 }
 
 

@@ -1,15 +1,20 @@
 import math
 import random
 import time
+from collections import deque
 
 from core.state import Step
+from core.coords import N, on_board
 from core.rules import (
     legal_moves, legal_steps, apply_move, is_terminal, winner, shortest_path_len,
+    is_blocked,
 )
 from agents.base import Agent, Analysis
 from agents.heuristics import evaluate
 
 _BIG = 9999
+
+DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
 
 class _Node:
@@ -25,29 +30,69 @@ class _Node:
         self.W = 0.0              # total value, from ROOT player's perspective
 
 
-def _greedy_step(state, rng):
-    """Pick a legal step minimizing the mover's shortest path (ties by rng)."""
+def _goal_row(player):
+    """Return the goal row for a player (0→row 8, 1→row 0)."""
+    return N - 1 if player == 0 else 0
+
+
+def _goal_dist_map(state, player):
+    """BFS backwards from the goal row to all reachable cells for `player`.
+    Returns dict: cell → distance to goal row (ignoring opponent pawn).
+    This lets us evaluate all step-destinations with a single BFS."""
+    goal = _goal_row(player)
+    # Seed the BFS with all goal-row cells that are reachable (on the board).
+    dist = {}
+    queue = deque()
+    for col in range(N):
+        cell = (col, goal)
+        dist[cell] = 0
+        queue.append(cell)
+    # BFS backwards: edge (a, b) is passable iff is_blocked(state, a, b) is False
+    # and is_blocked is symmetric, so we can traverse in either direction.
+    while queue:
+        cell = queue.popleft()
+        d = dist[cell]
+        for dx, dy in DIRS:
+            nxt = (cell[0] + dx, cell[1] + dy)
+            if not on_board(nxt) or nxt in dist:
+                continue
+            if is_blocked(state, cell, nxt):
+                continue
+            dist[nxt] = d + 1
+            queue.append(nxt)
+    return dist
+
+
+def _greedy_step_with_maps(state, rng, dist_maps):
+    """Pick a legal step minimizing the mover's shortest path (ties by rng).
+    `dist_maps` is a pre-computed dict {player: goal_dist_map} for the current
+    wall configuration. During a rollout, walls don't change, so we can reuse."""
     mover = state.turn
+    steps = legal_steps(state)
+    if not steps:
+        return rng.choice(legal_moves(state))
+
+    dist_map = dist_maps[mover]
     best, best_d = [], None
-    for c in legal_steps(state):
-        d = shortest_path_len(apply_move(state, Step(c)), mover)
-        d = _BIG if d is None else d
+    for c in steps:
+        d = dist_map.get(c, _BIG)
         if best_d is None or d < best_d:
             best_d, best = d, [c]
         elif d == best_d:
             best.append(c)
-    if best:
-        return Step(rng.choice(best))
-    return rng.choice(legal_moves(state))   # no steps (rare): any legal move
+    return Step(rng.choice(best))
 
 
 def _rollout_value(state, root_player, rng, cap):
-    """Play a greedy race to terminal (or cap). Return value in [-1,1] for root."""
+    """Play a greedy race to terminal (or cap). Return value in [-1,1] for root.
+    Pre-computes distance maps once per rollout since walls don't change."""
     s = state
+    # Pre-compute distance maps from each player's goal row (walls fixed).
+    dist_maps = {0: _goal_dist_map(s, 0), 1: _goal_dist_map(s, 1)}
     for _ in range(cap):
         if is_terminal(s):
             return 1.0 if winner(s) == root_player else -1.0
-        s = apply_move(s, _greedy_step(s, rng))
+        s = apply_move(s, _greedy_step_with_maps(s, rng, dist_maps))
     if is_terminal(s):
         return 1.0 if winner(s) == root_player else -1.0
     return max(-1.0, min(1.0, evaluate(s, root_player) / 10.0))
@@ -80,8 +125,16 @@ class MCTSAgent(Agent):
         # Selection + one expansion
         while not is_terminal(node.state):
             if node.untried is None:
-                node.untried = legal_moves(node.state)
-                self._rng.shuffle(node.untried)
+                moves = legal_moves(node.state)
+                # Partition: steps first, walls last. Shuffle within each group
+                # so that steps are expanded before walls, allowing UCT to
+                # identify good moves faster (walls lose tempo in greedy rollouts).
+                steps = [m for m in moves if isinstance(m, Step)]
+                walls = [m for m in moves if not isinstance(m, Step)]
+                self._rng.shuffle(steps)
+                self._rng.shuffle(walls)
+                # Store walls first (popped last = tried last) so steps tried first.
+                node.untried = walls + steps
             if node.untried:
                 move = node.untried.pop()
                 child = _Node(apply_move(node.state, move), parent=node, move=move)
