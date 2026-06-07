@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Barricades (Quoridor)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="board-container">
+      <canvas id="board-canvas"></canvas>
+      <div id="status-bar">
+        <span id="turn-indicator">Player 1's turn</span>
+        <span id="error-msg" class="hidden"></span>
+      </div>
+    </div>
+
+    <aside id="sidebar">
+      <!-- New game controls -->
+      <section id="new-game-section">
+        <h2>New Game</h2>
+        <div class="control-row">
+          <label>Player 1:
+            <select id="ctrl-0">
+              <option value="human">Human</option>
+            </select>
+          </label>
+        </div>
+        <div class="control-row">
+          <label>Player 2:
+            <select id="ctrl-1">
+              <option value="human">Human</option>
+            </select>
+          </label>
+        </div>
+        <button id="btn-new-game">New Game</button>
+      </section>
+
+      <!-- Game info -->
+      <section id="game-info">
+        <h2>Game Info</h2>
+        <div class="info-row">
+          <span class="player-0-label">Player 1 (red)</span>
+          <span id="walls-left-0" class="walls-count">10 walls</span>
+        </div>
+        <div class="info-row">
+          <span class="player-1-label">Player 2 (blue)</span>
+          <span id="walls-left-1" class="walls-count">10 walls</span>
+        </div>
+        <div class="info-row">
+          <span>Move:</span>
+          <span id="move-count">0</span>
+        </div>
+      </section>
+
+      <!-- Move mode controls -->
+      <section id="mode-section">
+        <h2>Input Mode</h2>
+        <div class="control-row">
+          <label>
+            <input type="radio" name="mode" value="move" checked /> Move pawn
+          </label>
+          <label>
+            <input type="radio" name="mode" value="wall" /> Place wall
+          </label>
+        </div>
+        <button id="btn-undo">Undo</button>
+      </section>
+
+      <!-- Engine vs engine controls -->
+      <section id="eve-section">
+        <h2>Engine vs Engine</h2>
+        <div class="control-row">
+          <button id="btn-eve-start">Start</button>
+          <button id="btn-eve-step">Step</button>
+          <button id="btn-eve-pause">Pause</button>
+        </div>
+        <div class="control-row">
+          <label>Speed:
+            <input type="range" id="speed-slider" min="0" max="1000" value="200" step="50" />
+            <span id="speed-label">200ms</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Analysis panel -->
+      <section id="analysis-section">
+        <h2>
+          Analysis
+          <button id="btn-toggle-analysis" class="toggle-btn">Hide</button>
+        </h2>
+        <div id="analysis-body">
+          <div class="info-row">
+            <span>Eval:</span>
+            <span id="analysis-value">—</span>
+          </div>
+          <div class="info-row">
+            <span>Nodes:</span>
+            <span id="analysis-nodes">—</span>
+          </div>
+          <div class="info-row">
+            <span>Depth:</span>
+            <span id="analysis-depth">—</span>
+          </div>
+          <div class="info-row">
+            <span>Time:</span>
+            <span id="analysis-time">—</span>
+          </div>
+          <div id="candidates-section">
+            <strong>Candidates:</strong>
+            <ol id="candidates-list"></ol>
+          </div>
+          <div class="info-row">
+            <label>
+              <input type="checkbox" id="show-best-move" checked />
+              Highlight best move
+            </label>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
