@@ -1,9 +1,9 @@
 import random
 import time
 
-from core.state import Step, Wall
+from core.state import Step
 from core.rules import (
-    legal_moves, legal_steps, legal_walls, apply_move, is_terminal,
+    legal_steps, legal_walls, apply_move, is_terminal,
     shortest_path_len,
 )
 from agents.base import Agent, Analysis
