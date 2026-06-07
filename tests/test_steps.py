@@ -64,3 +64,15 @@ def test_straight_jump_works_for_player_one():
     moves = set(legal_steps(s))
     assert (4, 2) in moves
     assert (4, 3) not in moves
+
+
+def test_diagonal_jump_with_one_side_blocked():
+    # Mover (4,4), opponent above at (4,5). Straight jump to (4,6) blocked by H(4,5).
+    # The left diagonal (3,5) is blocked by a vertical wall between (3,5) and (4,5);
+    # only the right diagonal (5,5) should be offered.
+    # V(3,4) blocks (3,4)<->(4,4) and (3,5)<->(4,5).
+    s = _state((4, 4), (4, 5), h=[(4, 5)], v=[(3, 4)])
+    moves = set(legal_steps(s))
+    assert (4, 6) not in moves        # straight jump blocked
+    assert (3, 5) not in moves        # left diagonal blocked by V(3,4)
+    assert (5, 5) in moves            # right diagonal open

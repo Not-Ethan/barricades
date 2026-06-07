@@ -42,6 +42,16 @@ def test_terminal_and_winner():
     assert winner(won) == 0
 
 
+def test_apply_wall_does_not_mutate_original():
+    s = initial_state()
+    h_before, v_before = s.h_walls, s.v_walls
+    _ = apply_move(s, Wall(3, 3, "H"))
+    # original frozensets unchanged (no in-place mutation)
+    assert s.h_walls == frozenset() and s.v_walls == frozenset()
+    assert s.h_walls is h_before and s.v_walls is v_before
+    assert s.walls_left == (10, 10)
+
+
 def test_random_playout_keeps_invariants():
     rng = random.Random(0)
     s = initial_state()
