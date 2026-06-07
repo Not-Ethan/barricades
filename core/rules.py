@@ -49,9 +49,8 @@ def legal_steps(state):
     return dests
 
 
-def shortest_path_len(state, player):
-    """BFS distance from player's pawn to its goal row, ignoring the opponent.
-    Returns None if no path exists."""
+def _shortest_path_len_ref(state, player):
+    """Pure-Python reference BFS (kept for equivalence testing/benchmarks)."""
     start = state.pawns[player]
     target = goal_row(player)
     if start[1] == target:
@@ -73,8 +72,17 @@ def shortest_path_len(state, player):
     return None
 
 
+def shortest_path_len(state, player):
+    """BFS distance from player's pawn to its goal row, ignoring the opponent.
+    Returns None if no path exists. (Bitboard flood-fill; equivalent to the
+    pure-Python reference, verified in tests/test_bitboard.py.)"""
+    from core.bitboard import bfs_dist
+    return bfs_dist(state, player)
+
+
 def has_path_to_goal(state, player):
-    return shortest_path_len(state, player) is not None
+    from core.bitboard import path_exists
+    return path_exists(state, player)
 
 
 def _with_wall(state, wall):
