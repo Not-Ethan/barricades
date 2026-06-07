@@ -115,3 +115,38 @@ def legal_walls(state):
                 if has_path_to_goal(s2, 0) and has_path_to_goal(s2, 1):
                     result.append(w)
     return result
+
+
+def legal_moves(state):
+    """All legal moves (Steps and Walls) for the current player."""
+    return [Step(c) for c in legal_steps(state)] + legal_walls(state)
+
+
+def apply_move(state, move):
+    """Return the new state after applying `move`. Assumes the move is legal."""
+    if isinstance(move, Step):
+        pawns = list(state.pawns)
+        pawns[state.turn] = move.to_cell
+        return GameState(tuple(pawns), state.h_walls, state.v_walls,
+                         state.walls_left, 1 - state.turn)
+    # Wall
+    left = list(state.walls_left)
+    left[state.turn] -= 1
+    if move.orient == "H":
+        h = state.h_walls | {(move.c, move.r)}
+        v = state.v_walls
+    else:
+        h = state.h_walls
+        v = state.v_walls | {(move.c, move.r)}
+    return GameState(state.pawns, h, v, tuple(left), 1 - state.turn)
+
+
+def is_terminal(state):
+    return winner(state) is not None
+
+
+def winner(state):
+    for p in (0, 1):
+        if state.pawns[p][1] == goal_row(p):
+            return p
+    return None
