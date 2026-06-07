@@ -3,6 +3,10 @@ name = "barricades"
 version = "0.1.0"
 description = "Quoridor game core and engine"
 requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
