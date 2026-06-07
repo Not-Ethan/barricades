@@ -1,9 +1,11 @@
 from agents.random_agent import RandomAgent
 from agents.greedy_agent import GreedyAgent
+from agents.minimax_agent import MinimaxAgent
 
 _FACTORIES = {
     "random": RandomAgent,
     "greedy": GreedyAgent,
+    "minimax": MinimaxAgent,
 }
 
 
