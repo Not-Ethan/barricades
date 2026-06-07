@@ -74,3 +74,44 @@ def shortest_path_len(state, player):
 
 def has_path_to_goal(state, player):
     return shortest_path_len(state, player) is not None
+
+
+def _with_wall(state, wall):
+    """Return a copy of state with `wall` added (no turn change, no decrement)."""
+    if wall.orient == "H":
+        return GameState(state.pawns, state.h_walls | {(wall.c, wall.r)},
+                         state.v_walls, state.walls_left, state.turn)
+    return GameState(state.pawns, state.h_walls,
+                     state.v_walls | {(wall.c, wall.r)},
+                     state.walls_left, state.turn)
+
+
+def _overlaps(state, wall):
+    """True if `wall` overlaps or crosses an existing wall."""
+    c, r = wall.c, wall.r
+    if wall.orient == "H":
+        return ((c, r) in state.h_walls
+                or (c - 1, r) in state.h_walls
+                or (c + 1, r) in state.h_walls
+                or (c, r) in state.v_walls)        # crossing
+    return ((c, r) in state.v_walls
+            or (c, r - 1) in state.v_walls
+            or (c, r + 1) in state.v_walls
+            or (c, r) in state.h_walls)            # crossing
+
+
+def legal_walls(state):
+    """All legal wall placements for the current player."""
+    if state.walls_left[state.turn] <= 0:
+        return []
+    result = []
+    for orient in ("H", "V"):
+        for c in range(N - 1):
+            for r in range(N - 1):
+                w = Wall(c, r, orient)
+                if _overlaps(state, w):
+                    continue
+                s2 = _with_wall(state, w)
+                if has_path_to_goal(s2, 0) and has_path_to_goal(s2, 1):
+                    result.append(w)
+    return result
