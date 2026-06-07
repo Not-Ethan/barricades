@@ -35,6 +35,11 @@ body {
   cursor: default;
   border: 1px solid #ccc;
   background: #fff;
+  /* Scale down to fit short viewports; stays crisp at native size otherwise. */
+  max-height: calc(100vh - 24px);
+  max-width: 100%;
+  height: auto;
+  width: auto;
 }
 
 #status-bar {

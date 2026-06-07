@@ -165,10 +165,15 @@ export class Board {
     const inHGap = fracY > CELL / stride && row >= 0 && row < ROWS - 1;
 
     if (!inVGap && !inHGap) {
-      // Pointer is entirely inside a cell — snap to nearest gap
-      // Distance to right gap edge: (CELL/stride - fracX) * stride ... just use nearest
+      // Pointer is inside a cell. Only snap to a gap when the pointer is
+      // reasonably close to one; a click in the dead-center of a cell places
+      // no wall (predictable — you must move toward a gap line).
       const distToVGap = Math.abs(fracX - CELL / stride);
       const distToHGap = Math.abs(fracY - CELL / stride);
+      const NEAR = 0.25; // must be within ~1/4 stride of a gap line to snap
+      if (Math.min(distToVGap, distToHGap) > NEAR) {
+        return null;
+      }
       if (distToVGap < distToHGap && col >= 0 && col < COLS - 1 && row >= 0 && row <= ROWS - 2) {
         return this._snapWall(col, row, "V");
       }
@@ -365,9 +370,13 @@ export class Board {
 
   _pointerPos(e) {
     const rect = this._canvas.getBoundingClientRect();
+    // Map displayed coordinates back to the canvas's internal resolution so
+    // hit-testing stays correct when CSS scales the canvas down to fit.
+    const sx = this._canvas.width / rect.width;
+    const sy = this._canvas.height / rect.height;
     return {
-      px: e.clientX - rect.left,
-      py: e.clientY - rect.top,
+      px: (e.clientX - rect.left) * sx,
+      py: (e.clientY - rect.top) * sy,
     };
   }
 
