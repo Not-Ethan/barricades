@@ -1,0 +1,58 @@
+from core.state import Step, Wall
+from core.rules import legal_steps, legal_walls, winner, is_terminal
+
+
+def move_to_dict(move):
+    if isinstance(move, Step):
+        return {"type": "step", "to": list(move.to_cell)}
+    if isinstance(move, Wall):
+        return {"type": "wall", "c": move.c, "r": move.r, "orient": move.orient}
+    raise ValueError(f"not a move: {move!r}")
+
+
+def parse_move(d):
+    t = d.get("type")
+    if t == "step":
+        to = d.get("to")
+        if not (isinstance(to, (list, tuple)) and len(to) == 2):
+            raise ValueError("step move requires 'to' as [c, r]")
+        return Step((int(to[0]), int(to[1])))
+    if t == "wall":
+        if d.get("c") is None or d.get("r") is None or d.get("orient") not in ("H", "V"):
+            raise ValueError("wall move requires 'c', 'r', and 'orient' in {H, V}")
+        return Wall(int(d["c"]), int(d["r"]), d["orient"])
+    raise ValueError(f"unknown move type: {t!r}")
+
+
+def _legal_dict(state):
+    if is_terminal(state):
+        return {"steps": [], "walls": []}
+    return {
+        "steps": [list(c) for c in legal_steps(state)],
+        "walls": [{"c": w.c, "r": w.r, "orient": w.orient} for w in legal_walls(state)],
+    }
+
+
+def state_to_dict(state, game_id, controllers, move_count=0):
+    return {
+        "id": game_id,
+        "pawns": [list(state.pawns[0]), list(state.pawns[1])],
+        "h_walls": sorted([list(a) for a in state.h_walls]),
+        "v_walls": sorted([list(a) for a in state.v_walls]),
+        "walls_left": list(state.walls_left),
+        "turn": state.turn,
+        "winner": winner(state),
+        "controllers": list(controllers),
+        "legal": _legal_dict(state),
+        "move_count": move_count,
+    }
+
+
+def analysis_to_dict(analysis):
+    return {
+        "best_move": move_to_dict(analysis.best_move),
+        "value": analysis.value,
+        "candidates": [{"move": move_to_dict(m), "score": s}
+                       for m, s in analysis.candidates],
+        "stats": analysis.stats,
+    }
