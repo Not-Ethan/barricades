@@ -47,3 +47,20 @@ def test_diagonal_jump_when_opponent_on_edge():
     moves = set(legal_steps(s))
     assert (3, 8) in moves and (5, 8) in moves
     assert (4, 9) not in moves
+
+
+def test_no_jump_when_wall_between_pawns():
+    # Wall between mover and adjacent opponent: no jump (straight or diagonal) offered.
+    s = _state((4, 4), (4, 5), h=[(4, 4)])  # H(4,4) blocks (4,4)<->(4,5)
+    moves = set(legal_steps(s))
+    assert (4, 6) not in moves
+    assert (3, 5) not in moves
+    assert (5, 5) not in moves
+    assert (4, 5) not in moves  # never land on opponent
+
+
+def test_straight_jump_works_for_player_one():
+    s = _state((4, 3), (4, 4), turn=1)  # p0 at (4,3), p1 at (4,4), p1's turn
+    moves = set(legal_steps(s))
+    assert (4, 2) in moves
+    assert (4, 3) not in moves

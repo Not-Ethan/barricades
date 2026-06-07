@@ -55,3 +55,17 @@ def test_wall_that_seals_a_player_is_illegal():
             s2 = GS(s.pawns, s.h_walls, s.v_walls | {(w.c, w.r)},
                     s.walls_left, s.turn)
         assert has_path_to_goal(s2, 0) and has_path_to_goal(s2, 1)
+
+
+def test_legal_walls_excludes_a_specific_sealing_wall():
+    from core.state import Wall
+    # Walls lining both sides of column 4 (rows 0..7) so col 4 is a corridor.
+    v = [(3, 0), (3, 2), (3, 4), (3, 6), (4, 0), (4, 2), (4, 4), (4, 6)]
+    s = _state(v=v)  # player 0 at (4,0); climbs straight up column 4 to row 8
+    walls = legal_walls(s)
+    keys = set((w.c, w.r, w.orient) for w in walls)
+    # H(4,5) blocks (4,5)<->(4,6); with the side walls it seals player 0's only path.
+    # It does not overlap any H wall and does not cross a V wall at (4,5).
+    assert (4, 5, "H") not in keys      # excluded because it seals player 0
+    # A far-away wall that seals nobody must still be offered.
+    assert (7, 7, "H") in keys
