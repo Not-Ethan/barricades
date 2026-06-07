@@ -2,6 +2,11 @@
     python scripts/train_az.py --iterations 3 --games 4 --sims 60
 """
 import argparse
+import os
+import sys
+
+# Make the repo root importable when run as `python scripts/train_az.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.az.model import QuoridorNet
 from agents.az.train import run_training, save_checkpoint
