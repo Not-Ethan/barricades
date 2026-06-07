@@ -46,3 +46,31 @@ def legal_steps(state):
                 if on_board(diag) and not is_blocked(state, opp, diag):
                     dests.append(diag)
     return dests
+
+
+def shortest_path_len(state, player):
+    """BFS distance from player's pawn to its goal row, ignoring the opponent.
+    Returns None if no path exists."""
+    start = state.pawns[player]
+    target = goal_row(player)
+    if start[1] == target:
+        return 0
+    seen = {start}
+    queue = deque([(start, 0)])
+    while queue:
+        cell, dist = queue.popleft()
+        for dx, dy in DIRS:
+            nxt = (cell[0] + dx, cell[1] + dy)
+            if not on_board(nxt) or nxt in seen:
+                continue
+            if is_blocked(state, cell, nxt):
+                continue
+            if nxt[1] == target:
+                return dist + 1
+            seen.add(nxt)
+            queue.append((nxt, dist + 1))
+    return None
+
+
+def has_path_to_goal(state, player):
+    return shortest_path_len(state, player) is not None
