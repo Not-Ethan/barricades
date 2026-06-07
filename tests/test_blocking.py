@@ -36,3 +36,12 @@ def test_vertical_wall_blocks_horizontal_moves():
     assert is_blocked(s, (4, 5), (5, 5))
     assert not is_blocked(s, (4, 3), (5, 3))   # outside span
     assert not is_blocked(s, (4, 4), (4, 5))   # vertical move unaffected
+
+
+def test_non_adjacent_cells_raise():
+    import pytest
+    s = _state()
+    with pytest.raises(ValueError):
+        is_blocked(s, (0, 0), (1, 1))   # diagonal
+    with pytest.raises(ValueError):
+        is_blocked(s, (0, 0), (0, 2))   # two apart
