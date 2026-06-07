@@ -15,6 +15,8 @@ class GreedyAgent(Agent):
 
     def select_move(self, state):
         me = state.turn
+        # Baseline policy: only ever step along our own shortest path; never
+        # place walls. Falls back to any legal move only if fully step-blocked.
         steps = [Step(c) for c in legal_steps(state)]
         if not steps:
             return self._rng.choice(legal_moves(state))
