@@ -13,8 +13,13 @@ def move_to_dict(move):
 def parse_move(d):
     t = d.get("type")
     if t == "step":
-        return Step(tuple(d["to"]))
+        to = d.get("to")
+        if not (isinstance(to, (list, tuple)) and len(to) == 2):
+            raise ValueError("step move requires 'to' as [c, r]")
+        return Step((int(to[0]), int(to[1])))
     if t == "wall":
+        if d.get("c") is None or d.get("r") is None or d.get("orient") not in ("H", "V"):
+            raise ValueError("wall move requires 'c', 'r', and 'orient' in {H, V}")
         return Wall(int(d["c"]), int(d["r"]), d["orient"])
     raise ValueError(f"unknown move type: {t!r}")
 

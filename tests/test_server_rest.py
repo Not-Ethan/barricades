@@ -68,3 +68,16 @@ def test_engine_move_rejected_when_human_to_move():
     gid = c.post("/games", json={"controllers": ["human", "greedy"]}).json()["id"]
     r = c.post(f"/games/{gid}/engine_move")
     assert r.status_code == 400                   # side to move is human
+
+
+def test_malformed_move_returns_400():
+    c = client()
+    gid = c.post("/games", json={"controllers": ["human", "human"]}).json()["id"]
+    r = c.post(f"/games/{gid}/move", json={"type": "step"})  # missing 'to'
+    assert r.status_code == 400
+
+
+def test_unknown_agent_rejected_at_creation():
+    c = client()
+    r = c.post("/games", json={"controllers": ["bogus", "human"]})
+    assert r.status_code == 400

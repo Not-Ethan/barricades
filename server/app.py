@@ -39,6 +39,10 @@ def create_app():
     @app.post("/games")
     def new_game(body: NewGame):
         names = _controller_names(body.controllers)
+        valid = set(available_agents()) | {"human"}
+        bad = [n for n in names if n not in valid]
+        if bad:
+            raise HTTPException(400, f"unknown controller(s): {bad}")
         game = store.create(names)
         # stash original specs for engine params
         game._specs = body.controllers

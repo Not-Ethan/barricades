@@ -37,3 +37,11 @@ def test_parse_move_rejects_garbage():
     import pytest
     with pytest.raises(ValueError):
         parse_move({"type": "teleport"})
+
+
+def test_parse_move_rejects_incomplete_step_and_wall():
+    import pytest
+    with pytest.raises(ValueError):
+        parse_move({"type": "step"})
+    with pytest.raises(ValueError):
+        parse_move({"type": "wall", "c": 1, "r": 1})  # missing orient
