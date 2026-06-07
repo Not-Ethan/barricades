@@ -73,6 +73,8 @@ class PUCTSearch:
                 node.W += v
                 node = node.parent
         # visit-count policy + robust child
+        if not root.children:                       # terminal root (defensive)
+            return None, {}, {"sims": self.sims, "value": 0.0, "visits": {}}
         total = sum(ch.N for ch in root.children)
         pi = {ch.move: ch.N / total for ch in root.children} if total else {}
         top = max(ch.N for ch in root.children)
