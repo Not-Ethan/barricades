@@ -1,5 +1,9 @@
 """AZ campaign: iterate self-play (async native pool) -> dense targets (annealed
-lambda) -> train (3-head) -> checkpoint -> quick win-rate vs random.
+lambda) -> train (3-head) -> checkpoint -> quick win-rate vs a baseline.
+
+Baseline defaults to GREEDY: random is a weak yardstick for Quoridor (it barely
+uses walls), so "beat random" mostly means "the net learned to walk to its goal".
+Greedy races the optimal shortest path, so beating it requires real wall tactics.
 
 Usage: python scripts/campaign.py [iterations] [games_per_iter] [sims] [device]
 """
@@ -22,9 +26,24 @@ def anneal_lambda(it, iterations, warmup_frac=0.6):
     return min(1.0, it / w)
 
 
-def winrate_vs_random(net, device, sims=60, games=10):
+def _make_opponent(opponent, seed):
+    if opponent == "random":
+        from agents.random_agent import RandomAgent
+        return RandomAgent(seed=seed)
+    if opponent == "greedy":
+        from agents.greedy_agent import GreedyAgent
+        return GreedyAgent(seed=seed)
+    if opponent == "minimax":
+        from agents.minimax_agent import MinimaxAgent
+        return MinimaxAgent(time_budget=0.1, seed=seed)
+    raise ValueError(f"unknown opponent: {opponent}")
+
+
+def winrate_vs(net, device, opponent="greedy", sims=60, games=10):
+    """Win fraction of the net-driven MCTS vs a baseline (random|greedy|minimax),
+    alternating colors. Greedy/minimax are stronger yardsticks than random for
+    Quoridor (they force the net to actually use walls, not just advance)."""
     from agents.native_agent import NativeMctsAgent
-    from agents.random_agent import RandomAgent
     from core.state import initial_state
     from core.rules import apply_move, is_terminal, winner
 
@@ -41,7 +60,7 @@ def winrate_vs_random(net, device, sims=60, games=10):
     wins = 0
     for g in range(games):
         a = NativeMctsAgent(sims=sims, seed=g, eval_fn=eval_fn)
-        b = RandomAgent(seed=1000 + g)
+        b = _make_opponent(opponent, seed=1000 + g)
         players = (a, b) if g % 2 == 0 else (b, a)
         s = initial_state()
         for _ in range(400):
@@ -57,7 +76,10 @@ def winrate_vs_random(net, device, sims=60, games=10):
 def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
                  max_plies=80, epochs=4, lr=1e-3, device="mps", seed=0,
                  channels=32, blocks=3, init_ckpt=None, out_dir="models",
-                 eval_games=10, log=print):
+                 eval_games=10, eval_opponent="greedy", log=print):
+    # Tip: keep n_games < games_per_iter so the pool refills and MPS batches stay
+    # full (n_games == games_per_iter means no refill -> the batch decays in the
+    # tail as games finish, cutting throughput).
     net = QuoridorNet(channels=channels, blocks=blocks)
     if init_ckpt and os.path.exists(init_ckpt):
         net.load_state_dict(torch.load(init_ckpt, map_location="cpu"), strict=False)
@@ -74,10 +96,11 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
         # train_minibatched moves minibatches to `device`.
         batch = form_dense_targets(examples, lam=lam, device="cpu")
         loss = train_minibatched(net, opt, batch, epochs=epochs, device=device)
-        wr = winrate_vs_random(net, device, games=eval_games)
+        wr = winrate_vs(net, device, opponent=eval_opponent, games=eval_games)
         rec = dict(it=it, lam=round(lam, 3), loss=round(loss, 4),
                    mean_game_len=round(st["examples"] / max(1, st["games"]), 1),
-                   games_per_sec=round(st["games_per_sec"], 2), winrate_vs_random=wr)
+                   games_per_sec=round(st["games_per_sec"], 2),
+                   winrate=wr, eval_opponent=eval_opponent)
         history.append(rec)
         log(rec)
         save_checkpoint(net, os.path.join(out_dir, f"campaign_it{it}.pt"))
@@ -90,7 +113,9 @@ if __name__ == "__main__":
     gpi = int(sys.argv[2]) if len(sys.argv) > 2 else 256
     sims = int(sys.argv[3]) if len(sys.argv) > 3 else 100
     device = sys.argv[4] if len(sys.argv) > 4 else "mps"
-    _, hist = run_campaign(iterations=iters, games_per_iter=gpi, n_games=gpi,
+    n_games = min(256, gpi)   # refill keeps MPS batches full when gpi is large
+    _, hist = run_campaign(iterations=iters, games_per_iter=gpi, n_games=n_games,
                            sims=sims, device=device)
     print("game length:", [h["mean_game_len"] for h in hist])
-    print("winrate vs random:", [h["winrate_vs_random"] for h in hist])
+    print("winrate vs %s:" % (hist[0]["eval_opponent"] if hist else "?"),
+          [h["winrate"] for h in hist])
