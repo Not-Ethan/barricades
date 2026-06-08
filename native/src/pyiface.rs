@@ -120,6 +120,12 @@ fn action_to_move_py(idx: usize, state: &Bound<'_, PyAny>) -> PyResult<Move> {
     Ok(action_to_move(idx, &parse_state(state)?))
 }
 
+#[pyfunction]
+#[pyo3(name = "solve_race")]
+fn solve_race_py(state: &Bound<'_, PyAny>) -> PyResult<(i32, Move)> {
+    Ok(crate::endgame::solve_race(&parse_state(state)?))
+}
+
 #[pyclass]
 pub struct Tree {
     inner: CoreTree,
@@ -255,6 +261,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encode_planes_py, m)?)?;
     m.add_function(wrap_pyfunction!(move_to_action_py, m)?)?;
     m.add_function(wrap_pyfunction!(action_to_move_py, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_race_py, m)?)?;
     m.add_class::<Tree>()?;
     m.add_class::<SelfPlayPool>()?;
     Ok(())
