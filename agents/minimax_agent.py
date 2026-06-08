@@ -8,107 +8,160 @@ from core.rules import (
 )
 from agents.base import Agent, Analysis
 from agents.heuristics import evaluate, WIN_SCORE
+from agents.movegen import relevant_moves, relevant_walls
+
+# Transposition table entry flags.
+_EXACT = 0
+_LOWER = 1  # alpha cut-off (we found a lower bound — score >= stored)
+_UPPER = 2  # beta cut-off (we found an upper bound — score <= stored)
 
 
-def ordered_moves(state, wall_cap=None):
-    """Steps first (those reducing our own shortest path ahead of others),
-    then walls (optionally capped to the most relevant).
+def _ordered_moves(state):
+    """Return moves ordered for good alpha-beta pruning.
 
-    wall_cap=None means all legal walls are included (used at the root so the
-    agent can consider every move). At deeper search nodes wall_cap limits walls
-    to the most positionally-relevant ones for tractability in pure Python.
+    Steps that shrink the mover's own shortest path are returned first
+    (ascending distance after the step), then wall moves that lengthen
+    the opponent's path.  Only relevant walls are included — ones that
+    don't lengthen the opponent's path are skipped entirely.
+
+    Falls back to all legal steps if relevant_moves returns nothing (safety
+    guard; in practice there is always at least one step available).
     """
     me = state.turn
+    rm = relevant_moves(state)
+    if not rm:
+        # Fallback: all legal steps (should never happen in a legal game).
+        from core.rules import legal_moves
+        rm = legal_moves(state)
+
     steps = []
-    for c in legal_steps(state):
-        # Evaluate distance AFTER stepping (for sorting; ignore turn switch).
-        new_state = apply_move(state, Step(c))
-        # shortest_path_len uses the *new* state; me is still the same player index.
-        d = shortest_path_len(new_state, me)
-        steps.append((d if d is not None else 1_000, Step(c)))
+    walls = []
+    for m in rm:
+        if isinstance(m, Step):
+            new_state = apply_move(state, m)
+            d = shortest_path_len(new_state, me)
+            steps.append((d if d is not None else 1_000, m))
+        else:
+            walls.append(m)
+
     steps.sort(key=lambda t: t[0])
-    ordered = [m for _, m in steps]
-
-    walls = legal_walls(state)
-    if wall_cap is not None and len(walls) > wall_cap:
-        opp = 1 - me
-        p0 = state.pawns[me]
-        p1 = state.pawns[opp]
-
-        def relevance(w):
-            # Closeness of the wall anchor to either pawn (smaller = more relevant).
-            return min(abs(w.c - p1[0]) + abs(w.r - p1[1]),
-                       abs(w.c - p0[0]) + abs(w.r - p0[1]))
-
-        walls = sorted(walls, key=relevance)[:wall_cap]
-    return ordered + walls
+    return [m for _, m in steps] + walls
 
 
 class MinimaxAgent(Agent):
-    """Alpha-beta minimax with iterative deepening and a wall-clock time budget.
+    """Alpha-beta minimax with iterative deepening, a transposition table,
+    and relevant-move pruning for a far smaller branching factor.
 
-    Move ordering: pawn steps that shrink our own shortest path come first,
-    then other steps, then walls. At non-root search nodes only the `wall_cap`
-    most positionally-relevant wall placements are considered (strength cap,
-    not a correctness issue).
+    Move generation: only relevant moves are considered at every node —
+    steps that reduce the mover's own shortest path come first (good
+    move ordering for alpha-beta), then walls that strictly lengthen the
+    opponent's shortest path (relevant_walls).  This cuts the branching
+    factor from ~130 to ~10-20, allowing much deeper search within the
+    same time budget.
+
+    Transposition table: a per-search dict keyed by (state, depth_remaining)
+    stores (value, flag) with flag ∈ {_EXACT, _LOWER, _UPPER} for alpha-beta
+    bounds.  The TT is cleared at the start of each analyze() call.
     """
 
     name = "minimax"
 
-    def __init__(self, time_budget=1.0, max_depth=64, wall_cap=12, seed=None):
+    def __init__(self, time_budget=1.0, max_depth=64, seed=None,
+                 # wall_cap kept for API compatibility but ignored (relevant_walls
+                 # already prunes junk walls precisely).
+                 wall_cap=None):
         self.time_budget = time_budget
         self.max_depth = max_depth
-        self.wall_cap = wall_cap
         self._rng = random.Random(seed)
         self._nodes = 0
         self._deadline = 0.0
+        self._tt: dict = {}  # transposition table — cleared per analyze()
 
     class _Timeout(Exception):
         pass
 
     def _search(self, state, depth, alpha, beta, root_player):
         self._nodes += 1
-        # Evaluate leaves WITHOUT a prior timeout check so that depth-1 always
-        # completes (guarantees a move exists even under a tiny budget).
+
+        # --- Leaf evaluation (must come before timeout so depth-1 completes) ---
         if is_terminal(state) or depth == 0:
             return evaluate(state, root_player)
+
+        # --- Timeout check (after leaf so the very first depth always finishes) ---
         if time.monotonic() > self._deadline:
             raise MinimaxAgent._Timeout()
+
+        # --- Transposition table probe ---
+        tt_key = (state, depth)
+        tt_entry = self._tt.get(tt_key)
+        if tt_entry is not None:
+            tt_val, tt_flag = tt_entry
+            if tt_flag == _EXACT:
+                return tt_val
+            elif tt_flag == _LOWER:
+                alpha = max(alpha, tt_val)
+            elif tt_flag == _UPPER:
+                beta = min(beta, tt_val)
+            if alpha >= beta:
+                return tt_val
+
+        orig_alpha = alpha
         maximizing = state.turn == root_player
-        moves = ordered_moves(state, wall_cap=self.wall_cap)
+        moves = _ordered_moves(state)
+
         if maximizing:
             best = -float("inf")
             for m in moves:
                 val = self._search(apply_move(state, m), depth - 1, alpha, beta, root_player)
-                best = max(best, val)
+                if val > best:
+                    best = val
                 alpha = max(alpha, best)
                 if alpha >= beta:
                     break
-            return best
         else:
             best = float("inf")
             for m in moves:
                 val = self._search(apply_move(state, m), depth - 1, alpha, beta, root_player)
-                best = min(best, val)
+                if val < best:
+                    best = val
                 beta = min(beta, best)
                 if alpha >= beta:
                     break
-            return best
+
+        # --- Transposition table store ---
+        if best <= orig_alpha:
+            flag = _UPPER
+        elif best >= beta:
+            flag = _LOWER
+        else:
+            flag = _EXACT
+        self._tt[tt_key] = (best, flag)
+
+        return best
 
     def analyze(self, state):
         """Run iterative-deepening alpha-beta from `state`. Returns an Analysis
         with the best move, its score, the top-8 root candidates, and search stats."""
         self._nodes = 0
+        self._tt = {}  # fresh TT per search
         self._deadline = time.monotonic() + self.time_budget
         t0 = time.monotonic()
         root_player = state.turn
-        root_moves = ordered_moves(state, wall_cap=None)  # all moves at root
+
+        # Root candidates: use relevant_moves (same pruning as internal nodes).
+        root_moves = _ordered_moves(state)
+        if not root_moves:
+            from core.rules import legal_moves
+            root_moves = legal_moves(state)
+
         best_move = root_moves[0]
         best_scores = {m: 0.0 for m in root_moves}
         completed_depth = 0
+
         for depth in range(1, self.max_depth + 1):
             try:
                 scores = {}
+                # Search root moves in order (already ordered by _ordered_moves).
                 for m in root_moves:
                     scores[m] = self._search(
                         apply_move(state, m), depth - 1,
@@ -121,6 +174,7 @@ class MinimaxAgent(Agent):
                     break
             except MinimaxAgent._Timeout:
                 break
+
         # Choose the best move; break ties randomly for reproducibility.
         best_val = max(best_scores.values())
         winners = [m for m, v in best_scores.items() if v == best_val]
@@ -134,6 +188,7 @@ class MinimaxAgent(Agent):
                 "nodes": self._nodes,
                 "depth": completed_depth,
                 "time_ms": int((time.monotonic() - t0) * 1000),
+                "tt_size": len(self._tt),
             },
         )
 
