@@ -3,10 +3,16 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
+from agents.heuristics import evaluate
 from agents.registry import available_agents, make_agent
+from core.coords import N, on_board
+from core.rules import has_path_to_goal, winner as core_winner, _overlaps
+from core.state import Wall
 from server.games import GameStore
-from server.schemas import NewGame, MoveIn
-from server.serialize import state_to_dict, parse_move, analysis_to_dict
+from server.schemas import AnalyzeRequest, NewGame, MoveIn
+from server.serialize import (
+    _legal_dict, analysis_to_dict, dict_to_state, parse_move, state_to_dict,
+)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -91,6 +97,104 @@ def create_app():
         game.apply(analysis.best_move)
         return {"state": state_payload(game),
                 "analysis": analysis_to_dict(analysis)}
+
+    # ------------------------------------------------------------------
+    # POST /analyze  — stateless position analysis (does not touch GameStore)
+    # ------------------------------------------------------------------
+
+    def _validate_position(state):
+        """Validate a GameState; return (ok, reason). reason is None when ok."""
+        # 1. Pawns on-board and distinct
+        for i, p in enumerate(state.pawns):
+            if not on_board(p):
+                return False, f"pawn {i} is off-board: {p}"
+        if state.pawns[0] == state.pawns[1]:
+            return False, "both pawns occupy the same cell"
+
+        # 2. walls_left each in 0..10
+        for i, wl in enumerate(state.walls_left):
+            if not (0 <= wl <= 10):
+                return False, f"walls_left[{i}] out of range 0..10: {wl}"
+
+        # 3. Wall anchors in range 0..N-2 and non-overlapping/non-crossing
+        for orient, wall_set in (("H", state.h_walls), ("V", state.v_walls)):
+            for (c, r) in wall_set:
+                if not (0 <= c <= N - 2 and 0 <= r <= N - 2):
+                    return False, (
+                        f"{orient}-wall anchor ({c},{r}) out of range 0..{N-2}"
+                    )
+
+        # Check for overlaps/crosses by rebuilding incrementally
+        from core.state import GameState as GS
+        tmp = GS(state.pawns, frozenset(), frozenset(), state.walls_left, state.turn)
+        for (c, r) in state.h_walls:
+            w = Wall(c, r, "H")
+            if _overlaps(tmp, w):
+                return False, f"H-wall at ({c},{r}) overlaps or crosses another wall"
+            tmp = GS(tmp.pawns, tmp.h_walls | {(c, r)}, tmp.v_walls,
+                     tmp.walls_left, tmp.turn)
+        for (c, r) in state.v_walls:
+            w = Wall(c, r, "V")
+            if _overlaps(tmp, w):
+                return False, f"V-wall at ({c},{r}) overlaps or crosses another wall"
+            tmp = GS(tmp.pawns, tmp.h_walls, tmp.v_walls | {(c, r)},
+                     tmp.walls_left, tmp.turn)
+
+        # 4. Both pawns must have a path to goal (unless the game is already won)
+        if core_winner(state) is None:
+            for player in (0, 1):
+                if not has_path_to_goal(state, player):
+                    return False, f"player {player} has no path to their goal"
+
+        return True, None
+
+    @app.post("/analyze")
+    def analyze(body: AnalyzeRequest):
+        # Build state
+        pos = body.position.model_dump()
+        state = dict_to_state(pos)
+
+        # Validate
+        ok, reason = _validate_position(state)
+        if not ok:
+            return {"valid": False, "reason": reason}
+
+        # Check for finished game
+        w = core_winner(state)
+        from agents.heuristics import WIN_SCORE
+        if w is not None:
+            static_eval = WIN_SCORE if w == state.turn else -WIN_SCORE
+            return {
+                "valid": True,
+                "winner": w,
+                "static_eval": static_eval,
+                "turn": state.turn,
+                "legal": {"steps": [], "walls": []},
+                "results": [],
+            }
+
+        # Compute static eval and legal moves
+        static_eval = evaluate(state, state.turn)
+        legal = _legal_dict(state)
+
+        # Run each engine
+        results = []
+        for spec in body.engines:
+            try:
+                agent = make_agent(spec.name, **spec.params)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            analysis = agent.analyze(state)
+            results.append({"engine": spec.name, **analysis_to_dict(analysis)})
+
+        return {
+            "valid": True,
+            "winner": None,
+            "static_eval": static_eval,
+            "turn": state.turn,
+            "legal": legal,
+            "results": results,
+        }
 
     import asyncio
 

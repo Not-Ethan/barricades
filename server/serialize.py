@@ -1,4 +1,4 @@
-from core.state import Step, Wall
+from core.state import Step, Wall, GameState
 from core.rules import legal_steps, legal_walls, winner, is_terminal
 
 
@@ -46,6 +46,21 @@ def state_to_dict(state, game_id, controllers, move_count=0):
         "legal": _legal_dict(state),
         "move_count": move_count,
     }
+
+
+def dict_to_state(d) -> GameState:
+    """Inverse of the core fields in state_to_dict.
+
+    Accepts a dict with keys: pawns, h_walls, v_walls, walls_left, turn.
+    Lists are converted to tuples; wall sets become frozensets.
+    """
+    pawns = tuple(tuple(p) for p in d["pawns"])
+    h_walls = frozenset(tuple(w) for w in d["h_walls"])
+    v_walls = frozenset(tuple(w) for w in d["v_walls"])
+    walls_left = tuple(d["walls_left"])
+    turn = int(d["turn"])
+    return GameState(pawns=pawns, h_walls=h_walls, v_walls=v_walls,
+                     walls_left=walls_left, turn=turn)
 
 
 def analysis_to_dict(analysis):
