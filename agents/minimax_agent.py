@@ -58,12 +58,19 @@ class MinimaxAgent(Agent):
         Optional evaluation function with signature ``eval_fn(state, player) -> float``.
         Defaults to ``None``, which uses the standard ``agents.heuristics.evaluate``.
         This parameter is backward-compatible: omitting it preserves existing behaviour.
+    candidate_moves:
+        Optional callable ``state -> list[Move]``.  When provided, the search uses
+        it for BOTH root and internal nodes instead of the default ``ordered_moves``
+        with wall-cap pruning.  Steps are still ordered first (ascending resulting
+        own shortest-path); walls follow in the order returned by the callable.
+        When ``None`` (default), behaviour is EXACTLY as before (``ordered_moves``
+        with wall_cap).
     """
 
     name = "minimax"
 
     def __init__(self, time_budget=1.0, max_depth=64, wall_cap=12, seed=None,
-                 eval_fn=None):
+                 eval_fn=None, candidate_moves=None):
         self.time_budget = time_budget
         self.max_depth = max_depth
         self.wall_cap = wall_cap
@@ -72,9 +79,40 @@ class MinimaxAgent(Agent):
         self._deadline = 0.0
         # Use the provided eval function or fall back to the default heuristic.
         self._eval = eval_fn if eval_fn is not None else evaluate
+        # Optional custom candidate-move generator.
+        self._candidate_moves = candidate_moves
 
     class _Timeout(Exception):
         pass
+
+    def _get_moves(self, state, at_root=False):
+        """Return an ordered move list for the given state.
+
+        When ``self._candidate_moves`` is set, delegates to it and re-applies
+        the steps-first ordering (steps sorted by resulting own shortest path
+        ascending, then walls in the order returned by the callable).
+
+        When ``None``, falls back to the existing ``ordered_moves`` behaviour
+        (wall_cap applied at internal nodes, ignored at root so all walls are
+        considered there).
+        """
+        if self._candidate_moves is not None:
+            raw = self._candidate_moves(state)
+            me = state.turn
+            steps = []
+            walls = []
+            for m in raw:
+                if isinstance(m, Step):
+                    s2 = apply_move(state, m)
+                    d = shortest_path_len(s2, me)
+                    steps.append((d if d is not None else 1_000, m))
+                else:
+                    walls.append(m)
+            steps.sort(key=lambda t: t[0])
+            return [m for _, m in steps] + walls
+        # Default: use the existing ordered_moves logic.
+        cap = None if at_root else self.wall_cap
+        return ordered_moves(state, wall_cap=cap)
 
     def _search(self, state, depth, alpha, beta, root_player):
         self._nodes += 1
@@ -85,7 +123,7 @@ class MinimaxAgent(Agent):
         if time.monotonic() > self._deadline:
             raise MinimaxAgent._Timeout()
         maximizing = state.turn == root_player
-        moves = ordered_moves(state, wall_cap=self.wall_cap)
+        moves = self._get_moves(state, at_root=False)
         if maximizing:
             best = -float("inf")
             for m in moves:
@@ -112,7 +150,7 @@ class MinimaxAgent(Agent):
         self._deadline = time.monotonic() + self.time_budget
         t0 = time.monotonic()
         root_player = state.turn
-        root_moves = ordered_moves(state, wall_cap=None)  # all moves at root
+        root_moves = self._get_moves(state, at_root=True)  # all moves at root
         best_move = root_moves[0]
         best_scores = {m: 0.0 for m in root_moves}
         completed_depth = 0

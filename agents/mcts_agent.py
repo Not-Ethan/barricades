@@ -65,7 +65,7 @@ class MCTSAgent(Agent):
     name = "mcts"
 
     def __init__(self, time_budget=1.0, max_sims=100_000, c=1.4,
-                 rollout_cap=40, seed=None, eval_fn=None):
+                 rollout_cap=40, seed=None, eval_fn=None, candidate_moves=None):
         self.time_budget = time_budget
         self.max_sims = max_sims
         self.c = c
@@ -74,6 +74,8 @@ class MCTSAgent(Agent):
         self._rng = random.Random(seed)
         # Use the provided eval function or fall back to the default heuristic.
         self._eval = eval_fn if eval_fn is not None else evaluate
+        # Optional custom candidate-move generator.
+        self._candidate_moves = candidate_moves
 
     def _leaf_value(self, state, root_player):
         """Return a value in [-1, 1] for root_player using self._eval.
@@ -101,12 +103,28 @@ class MCTSAgent(Agent):
                 best_u, best = u, ch
         return best
 
+    def _get_candidates(self, state):
+        """Return candidate moves for tree expansion.
+
+        When ``self._candidate_moves`` is set, delegates to it (with the same
+        empty→legal_moves fallback).  Otherwise uses the module-level
+        ``_candidate_moves`` function (relevant_moves with legal_moves fallback)
+        to preserve existing behaviour.
+        """
+        if self._candidate_moves is not None:
+            moves = self._candidate_moves(state)
+        else:
+            moves = _candidate_moves(state)
+        if not moves:
+            moves = legal_moves(state)
+        return moves
+
     def _simulate(self, root, root_player):
         node = root
         # Selection + one expansion
         while not is_terminal(node.state):
             if node.untried is None:
-                moves = _candidate_moves(node.state)
+                moves = self._get_candidates(node.state)
                 # Partition: steps first, walls last. Shuffle within each group
                 # so that steps are expanded before walls, allowing UCT to
                 # identify good moves faster.

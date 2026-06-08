@@ -23,7 +23,7 @@ from core.rules import (
     legal_walls, legal_steps, legal_moves, apply_move,
     shortest_path_len, is_terminal,
 )
-from agents.movegen import relevant_walls, relevant_moves
+from agents.movegen import relevant_walls, relevant_moves, probable_walls, probable_moves
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +231,267 @@ def test_performance_sanity():
         f"\n[perf] relevant_moves: {per_call_ms:.3f} ms/call "
         f"over {len(states)} states ({elapsed_ms:.1f} ms total)"
     )
+
+
+# ===========================================================================
+# Tests for probable_walls / probable_moves
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# PW-1: probable_walls(s) ⊆ legal_walls(s) always
+# ---------------------------------------------------------------------------
+
+def test_probable_walls_subset_of_legal_initial():
+    """Every wall in probable_walls must be a legal wall."""
+    s = initial_state()
+    legal = set(legal_walls(s))
+    for w in probable_walls(s):
+        assert w in legal, f"Wall {w} in probable_walls but not in legal_walls"
+
+
+# ---------------------------------------------------------------------------
+# PW-2: Concrete included / excluded examples on the initial board
+#
+# Initial board: pawns at (4,0) [player 0] and (4,8) [player 1].
+# Near-pawn (Chebyshev 2) examples (anchor within 2 of (4,0) or (4,8)):
+#   - Wall(3,1,'H') — anchor (3,1): Chebyshev to (4,0) = max(1,1) = 1 ≤ 2. INCLUDED.
+#   - Wall(4,6,'V') — anchor (4,6): Chebyshev to (4,8) = max(0,2) = 2 ≤ 2. INCLUDED.
+# Edge wall examples:
+#   - Wall(0,3,'H') — c==0. INCLUDED.
+#   - Wall(7,5,'V') — c==7. INCLUDED.
+# Dead-center wall far from both pawns (no existing walls):
+#   - Anchor (4,4): Chebyshev to (4,0) = 4, Chebyshev to (4,8) = 4.
+#     Not at edge (4 != 0 and 4 != 7), no existing walls.
+#     → Wall(4,4,'H') and Wall(4,4,'V') should be EXCLUDED on initial board.
+# ---------------------------------------------------------------------------
+
+def test_probable_walls_includes_near_pawn_initial():
+    """Walls within Chebyshev 2 of a pawn should be in probable_walls."""
+    s = initial_state()
+    pw = set(probable_walls(s))
+    legal = set(legal_walls(s))
+
+    # Near player 0's pawn at (4,0): anchor (3,1), Cheb dist = max(|3-4|,|1-0|)=1.
+    w_near_p0 = Wall(3, 1, "H")
+    if w_near_p0 in legal:
+        assert w_near_p0 in pw, f"{w_near_p0} should be in probable_walls (near pawn 0)"
+
+    # Near player 1's pawn at (4,8): anchor (4,6), Cheb dist = max(|4-4|,|6-8|)=2.
+    w_near_p1 = Wall(4, 6, "V")
+    if w_near_p1 in legal:
+        assert w_near_p1 in pw, f"{w_near_p1} should be in probable_walls (near pawn 1)"
+
+
+def test_probable_walls_includes_edge_walls_initial():
+    """Walls at board edges (c==0, c==7, r==0, r==7) should be in probable_walls."""
+    s = initial_state()
+    pw = set(probable_walls(s))
+    legal = set(legal_walls(s))
+
+    for w_args in [(0, 3, "H"), (7, 5, "V"), (2, 0, "H"), (3, 7, "V")]:
+        w = Wall(*w_args)
+        if w in legal:
+            assert w in pw, f"{w} should be in probable_walls (edge wall)"
+
+
+def test_probable_walls_excludes_dead_center_initial():
+    """Anchor (4,4) is 4 steps from both pawns, not at an edge, no walls nearby.
+
+    On the initial board Wall(4,4,'H') and Wall(4,4,'V') should be EXCLUDED.
+    Chebyshev distance to pawn (4,0) = max(0,4)=4 > 2.
+    Chebyshev distance to pawn (4,8) = max(0,4)=4 > 2.
+    No existing walls, so near-existing-wall rule doesn't apply.
+    Not at edge (4 != 0 and 4 != 7 for both c and r).
+    """
+    s = initial_state()
+    pw = set(probable_walls(s))
+    legal = set(legal_walls(s))
+
+    # Verify the anchor is genuinely in the middle (safety check).
+    assert Wall(4, 4, "H") in legal, "Wall(4,4,H) should be legal on initial board"
+    assert Wall(4, 4, "V") in legal, "Wall(4,4,V) should be legal on initial board"
+
+    assert Wall(4, 4, "H") not in pw, (
+        "Wall(4,4,H) should be EXCLUDED from probable_walls on initial board "
+        "(anchor (4,4): Cheb to (4,0)=4>2, Cheb to (4,8)=4>2, not edge, no existing walls)"
+    )
+    assert Wall(4, 4, "V") not in pw, (
+        "Wall(4,4,V) should be EXCLUDED from probable_walls on initial board "
+        "(anchor (4,4): Cheb to (4,0)=4>2, Cheb to (4,8)=4>2, not edge, no existing walls)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PW-3: After placing a wall, a Chebyshev-1 neighbor becomes probable
+#        (near-existing-wall rule) even if far from pawns.
+# ---------------------------------------------------------------------------
+
+def test_probable_walls_near_existing_wall():
+    """After placing Wall(4,4,'H'), a Chebyshev-1 anchor should appear in probable_walls."""
+    s = initial_state()
+    # Place a wall at dead-center anchor (4,4) by building a state directly.
+    # We do this by applying the wall move from initial state (p0 has walls).
+    s2 = apply_move(s, Wall(4, 4, "H"))
+    # Now the existing wall anchor is (4,4). A wall at anchor (5,4) has
+    # Chebyshev distance max(|5-4|,|4-4|)=1 ≤ 1 from (4,4). It should be probable.
+    pw2 = set(probable_walls(s2))
+    legal2 = set(legal_walls(s2))
+    w_neighbor = Wall(5, 4, "H")
+    if w_neighbor in legal2:
+        assert w_neighbor in pw2, (
+            f"{w_neighbor} should be in probable_walls after placing Wall(4,4,H) "
+            "(Chebyshev-1 from that anchor)"
+        )
+
+    # Also check that the dead-center anchor (4,3) with Cheb-1 from (4,4) is probable.
+    w_neighbor2 = Wall(4, 3, "V")
+    if w_neighbor2 in legal2:
+        assert w_neighbor2 in pw2, (
+            f"{w_neighbor2} should be in probable_walls after placing Wall(4,4,H)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PW-4: probable_moves includes ALL legal steps
+# ---------------------------------------------------------------------------
+
+def test_probable_moves_includes_all_legal_steps():
+    """probable_moves must include every legal step (no steps are pruned)."""
+    s = initial_state()
+    pm = probable_moves(s)
+    pm_steps = {m.to_cell for m in pm if isinstance(m, Step)}
+    expected_steps = set(legal_steps(s))
+    assert pm_steps == expected_steps, (
+        f"probable_moves missing steps. Expected {expected_steps}, got {pm_steps}"
+    )
+
+
+def test_probable_moves_steps_equal_legal_steps_random():
+    """On several random states probable_moves has exactly the legal steps."""
+    states = _random_states(20, seed=17)
+    for s in states:
+        pm = probable_moves(s)
+        pm_steps = {m.to_cell for m in pm if isinstance(m, Step)}
+        expected_steps = set(legal_steps(s))
+        assert pm_steps == expected_steps
+
+
+# ---------------------------------------------------------------------------
+# PW-5: Property test over ~30 random reachable states
+# ---------------------------------------------------------------------------
+
+def test_probable_walls_property_random():
+    """For ~30 random states: probable_walls ⊆ legal_walls; no crash."""
+    states = _random_states(30, seed=31)
+    assert len(states) >= 20, f"Too few random states: {len(states)}"
+    for s in states:
+        legal = set(legal_walls(s))
+        pw = probable_walls(s)
+        # Subset requirement.
+        for w in pw:
+            assert w in legal, (
+                f"Wall {w} in probable_walls but NOT in legal_walls"
+            )
+        # probable_walls is always a subset.
+        assert set(pw) <= legal
+
+
+# ---------------------------------------------------------------------------
+# PW-6: Performance sanity for probable_moves
+# ---------------------------------------------------------------------------
+
+def test_probable_moves_performance():
+    """probable_moves should be fast; measure ms/call and typical #probable_walls."""
+    states = _random_states(50, seed=77)
+    assert len(states) >= 30
+
+    wall_counts = []
+    t0 = time.perf_counter()
+    for s in states:
+        pm = probable_moves(s)
+        wall_counts.append(sum(1 for m in pm if isinstance(m, Wall)))
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+
+    per_call_ms = elapsed_ms / len(states)
+    avg_walls = sum(wall_counts) / len(wall_counts)
+
+    # Should be comfortably under 10 ms/call.
+    assert per_call_ms < 10.0, (
+        f"probable_moves too slow: {per_call_ms:.2f} ms/call"
+    )
+    print(
+        f"\n[perf] probable_moves: {per_call_ms:.3f} ms/call over {len(states)} states; "
+        f"avg probable_walls={avg_walls:.1f}"
+    )
+
+
+# ===========================================================================
+# Tests for candidate_moves parameter in MinimaxAgent and MCTSAgent
+# ===========================================================================
+
+def test_minimax_with_probable_moves_returns_legal():
+    """MinimaxAgent(candidate_moves=probable_moves) returns a legal move."""
+    from core.rules import legal_moves
+    from agents.minimax_agent import MinimaxAgent
+    a = MinimaxAgent(time_budget=0.3, seed=0, candidate_moves=probable_moves)
+    s = initial_state()
+    move = a.select_move(s)
+    assert move in legal_moves(s), f"MinimaxAgent returned illegal move: {move}"
+
+
+def test_mcts_with_probable_moves_returns_legal():
+    """MCTSAgent(candidate_moves=probable_moves) returns a legal move."""
+    from core.rules import legal_moves
+    from agents.mcts_agent import MCTSAgent
+    a = MCTSAgent(time_budget=0.3, seed=0, candidate_moves=probable_moves)
+    s = initial_state()
+    move = a.select_move(s)
+    assert move in legal_moves(s), f"MCTSAgent returned illegal move: {move}"
+
+
+def test_minimax_default_unchanged():
+    """Default MinimaxAgent (no candidate_moves) still behaves as before."""
+    from core.rules import legal_moves
+    from agents.minimax_agent import MinimaxAgent
+    a = MinimaxAgent(time_budget=0.3, seed=0)
+    s = initial_state()
+    move = a.select_move(s)
+    assert move in legal_moves(s)
+    # Default agent should still prefer a step on the open board.
+    from core.state import Step
+    assert isinstance(move, Step), "Default MinimaxAgent should step on open board"
+
+
+def test_mcts_default_unchanged():
+    """Default MCTSAgent (no candidate_moves) still behaves as before."""
+    from core.rules import legal_moves
+    from agents.mcts_agent import MCTSAgent
+    a = MCTSAgent(time_budget=0.3, seed=0)
+    s = initial_state()
+    move = a.select_move(s)
+    assert move in legal_moves(s)
+
+
+def test_minimax_candidate_moves_used_at_root_and_internal():
+    """MinimaxAgent with candidate_moves uses it at root and search nodes.
+
+    Confirm it runs to completion and produces a legal move for a few states.
+    """
+    from core.rules import legal_moves
+    from agents.minimax_agent import MinimaxAgent
+    states = _random_states(5, seed=55)
+    a = MinimaxAgent(time_budget=0.2, seed=0, candidate_moves=probable_moves)
+    for s in states:
+        move = a.select_move(s)
+        assert move in legal_moves(s)
+
+
+def test_mcts_candidate_moves_used_throughout():
+    """MCTSAgent with candidate_moves uses it for expansion on several states."""
+    from core.rules import legal_moves
+    from agents.mcts_agent import MCTSAgent
+    states = _random_states(5, seed=66)
+    a = MCTSAgent(time_budget=0.2, seed=0, candidate_moves=probable_moves)
+    for s in states:
+        move = a.select_move(s)
+        assert move in legal_moves(s)

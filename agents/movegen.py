@@ -157,3 +157,73 @@ def relevant_moves(state) -> list:
     Equivalent to legal_moves(state) but with pointless walls pruned.
     """
     return [Step(c) for c in legal_steps(state)] + relevant_walls(state)
+
+
+# ---------------------------------------------------------------------------
+# Probable-wall candidate generator
+# ---------------------------------------------------------------------------
+
+def probable_walls(state) -> list:
+    """Return the subset of legal_walls(state) that are "probable" candidates.
+
+    A wall is probable iff ANY of the following hold for its anchor (c, r):
+
+    1. **Near a pawn**: Chebyshev distance from (c, r) to either pawn's cell
+       is ≤ 2.  I.e. ``max(|c-pc|, |r-pr|) ≤ 2`` for some pawn (pc, pr).
+
+    2. **Near an existing wall**: Chebyshev distance from (c, r) to any
+       already-placed wall anchor (from state.h_walls ∪ state.v_walls) is ≤ 1.
+       Orientation of the existing wall is ignored.
+
+    3. **At the board edge**: c == 0 or c == 7 or r == 0 or r == 7.
+
+    This is a superset of typical "offensive" walls (which must lengthen the
+    opponent's path) and also captures defensive / structural placements.
+
+    Returns a list — always a subset of legal_walls(state).
+    """
+    pawns = state.pawns  # ((pc0, pr0), (pc1, pr1))
+
+    # Precompute all existing wall anchors (across both orientations).
+    existing_anchors = state.h_walls | state.v_walls  # frozenset of (c, r)
+
+    result = []
+    for w in legal_walls(state):
+        c, r = w.c, w.r
+
+        # Rule 3: board edge.
+        if c == 0 or c == 7 or r == 0 or r == 7:
+            result.append(w)
+            continue
+
+        # Rule 1: near a pawn (Chebyshev ≤ 2).
+        near_pawn = False
+        for pc, pr in pawns:
+            if max(abs(c - pc), abs(r - pr)) <= 2:
+                near_pawn = True
+                break
+        if near_pawn:
+            result.append(w)
+            continue
+
+        # Rule 2: near an existing wall (Chebyshev ≤ 1).
+        near_wall = False
+        for ac, ar in existing_anchors:
+            if max(abs(c - ac), abs(r - ar)) <= 1:
+                near_wall = True
+                break
+        if near_wall:
+            result.append(w)
+
+    return result
+
+
+def probable_moves(state) -> list:
+    """All legal step moves plus the probable wall candidates.
+
+    Broader than relevant_moves (which only keeps offensive walls that
+    lengthen the opponent's path). probable_moves retains walls near a pawn,
+    near an existing wall, or at the board edge — capturing both offensive
+    and defensive/structural placements.
+    """
+    return [Step(c) for c in legal_steps(state)] + probable_walls(state)
