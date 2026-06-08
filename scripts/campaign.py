@@ -68,7 +68,7 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
     for it in range(iterations):
         lam = anneal_lambda(it, iterations)
         examples, st = run_selfplay(total_games=games_per_iter, n_games=n_games,
-                                    sims=sims, device=device, net=net, seed=seed + it,
+                                    sims=sims, device=device, net=net, seed=seed + it * 2,
                                     max_plies=max_plies)
         batch = form_dense_targets(examples, lam=lam, device=device)
         losses = [train_step_dense(net, opt, batch) for _ in range(epochs)]

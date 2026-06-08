@@ -176,6 +176,10 @@ impl Tree {
     fn root_visits(&self) -> u32 {
         self.inner.root_visits()
     }
+
+    fn root_value(&self) -> f64 {
+        self.inner.root_value()
+    }
 }
 
 #[pyclass]

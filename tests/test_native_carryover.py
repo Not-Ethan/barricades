@@ -40,6 +40,29 @@ def test_advance_preserves_subtree_and_stays_usable():
     assert abs(float(np.asarray(pi2).sum()) - 1.0) < 1e-4
 
 
+def _state(p0, p1, turn=0, h=(), v=()):
+    return GameState((p0, p1), frozenset(h), frozenset(v), (10, 10), turn)
+
+
+def test_advance_negates_value_perspective():
+    # Player 0 is clearly winning: p0 at (4,6) -> 2 steps from its goal row 8;
+    # p1 at (0,7) -> 7 steps from its goal row 0. With p0 to move, the root value
+    # (p0 perspective) must be POSITIVE. After p0's move we re-root to a p1-to-move
+    # position where p1 is badly losing, so the carried root value must be NEGATIVE
+    # -- which is ONLY true if advance() negated the retained subtree's W (the
+    # perspective flip). A missing/wrong negation leaves it positive and fails here.
+    s = _state((4, 6), (0, 7), turn=0)
+    t = bn.Tree(to_native(s), 1.5, 0)
+    t.run_heuristic(300)
+    v_p0 = t.root_value()
+    assert v_p0 > 0.0, f"p0 near goal should value root > 0, got {v_p0}"
+    mv, _ = t.best_move(0.0)
+    t.advance(mv)
+    # read immediately after advance: reflects the carried (negated) W, before new sims
+    v_p1 = t.root_value()
+    assert v_p1 < 0.0, f"after re-root to losing p1, carried value must be < 0, got {v_p1}"
+
+
 def test_carryover_pool_smoke():
     pool = bn.SelfPlayPool(n_games=4, total_games=4, sims=16, seed=0,
                            max_plies=20, temp_moves=4, carryover=True)

@@ -252,6 +252,11 @@ impl Tree {
         self.nodes[self.root as usize].expanded
     }
 
+    pub fn root_value(&self) -> f64 {
+        let r = &self.nodes[self.root as usize];
+        if r.n > 0 { r.w / r.n as f64 } else { 0.0 }
+    }
+
     /// Re-root the tree to the chosen move's child, keeping that subtree (visits,
     /// priors, expansion) and NEGATING every retained node's `w` (root-player
     /// perspective flips by one ply). Compacts the arena to the retained subtree.
