@@ -3,9 +3,10 @@ use pyo3::types::PyModule;
 
 use crate::bitboard::bfs_dist;
 use crate::encoding::{action_to_move, encode_planes, move_to_action};
+use crate::mcts::{Leaf, Tree as CoreTree};
 use crate::movegen::{is_blocked, legal_moves};
 use crate::state::{apply_move, is_terminal, winner, GameState, Move};
-use numpy::{IntoPyArray, PyArray3};
+use numpy::{IntoPyArray, PyArray3, PyReadonlyArray1};
 
 pub fn parse_state(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
     let pawns: ((i32, i32), (i32, i32)) = state.get_item(0)?.extract()?;
@@ -105,6 +106,49 @@ fn action_to_move_py(idx: usize, state: &Bound<'_, PyAny>) -> PyResult<Move> {
     Ok(action_to_move(idx, &parse_state(state)?))
 }
 
+#[pyclass]
+pub struct Tree {
+    inner: CoreTree,
+}
+
+#[pymethods]
+impl Tree {
+    #[new]
+    fn new(state: &Bound<'_, PyAny>, c_puct: f64, seed: u64) -> PyResult<Tree> {
+        Ok(Tree { inner: CoreTree::new(parse_state(state)?, c_puct, seed) })
+    }
+
+    fn prepare_leaf<'py>(&mut self, py: Python<'py>) -> Option<Bound<'py, PyArray3<f32>>> {
+        let mut buf = vec![0f32; 6 * 81];
+        match self.inner.prepare_leaf(&mut buf) {
+            Leaf::Parked => {
+                let arr = numpy::ndarray::Array3::from_shape_vec((6, 9, 9), buf).unwrap();
+                Some(arr.into_pyarray(py))
+            }
+            Leaf::Terminal => None,
+        }
+    }
+
+    fn receive(&mut self, policy: PyReadonlyArray1<f32>, value: f64) -> PyResult<()> {
+        self.inner.receive(policy.as_slice()?, value);
+        Ok(())
+    }
+
+    fn run_heuristic(&mut self, sims: u32) -> Move {
+        self.inner.run_heuristic(sims)
+    }
+
+    #[pyo3(signature = (alpha, eps=0.25))]
+    fn apply_root_noise(&mut self, alpha: f64, eps: f64) {
+        self.inner.apply_root_noise(alpha, eps);
+    }
+
+    fn best_move(&mut self, temp: f64) -> (Move, Vec<f32>) {
+        let (mv, pi) = self.inner.best_move(temp);
+        (mv, pi.to_vec())
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(legal_moves_py, m)?)?;
     m.add_function(wrap_pyfunction!(shortest_path_len_py, m)?)?;
@@ -115,5 +159,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encode_planes_py, m)?)?;
     m.add_function(wrap_pyfunction!(move_to_action_py, m)?)?;
     m.add_function(wrap_pyfunction!(action_to_move_py, m)?)?;
+    m.add_class::<Tree>()?;
     Ok(())
 }

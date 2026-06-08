@@ -64,6 +64,7 @@ pub fn move_to_action(m: &Move, s: &GameState) -> usize {
 }
 
 pub fn action_to_move(idx: usize, s: &GameState) -> Move {
+    debug_assert!(idx < N_ACTIONS, "action_to_move: idx out of range");
     let flip = s.turn == 1;
     if idx < 12 {
         let (dx, dy) = DIRS12[idx];
