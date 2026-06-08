@@ -3,6 +3,8 @@ import time
 from core.state import GameState, Step, initial_state
 from core.rules import legal_moves
 from agents.mcts_agent import MCTSAgent
+from agents.greedy_agent import GreedyAgent
+from agents.strength import play_recorded_game, wasted_wall_rate
 
 
 def _state(p0, p1, wl=(10, 10), turn=0, h=(), v=()):
@@ -55,3 +57,27 @@ def test_max_sims_cap_is_honored():
 
 def test_name():
     assert MCTSAgent().name == "mcts"
+
+
+def test_low_wasted_wall_rate():
+    """New MCTS (relevant-move candidates) should place almost no pointless walls.
+
+    Because only relevant_moves() are candidates — walls that strictly increase
+    the opponent's shortest path — the wasted_wall_rate should be near 0.
+    Assert ≤ 0.15 to allow a small margin for edge cases.
+    """
+    mcts = MCTSAgent(time_budget=0.1, seed=42)
+    greedy = GreedyAgent(seed=7)
+
+    all_records = []
+    for game_seed in range(5):
+        mcts_i = MCTSAgent(time_budget=0.1, seed=game_seed)
+        greedy_i = GreedyAgent(seed=1000 + game_seed)
+        result = play_recorded_game(mcts_i, greedy_i)
+        all_records.extend(result["records"])
+
+    # Only measure walls placed by MCTS (player 0 in these games).
+    wwr = wasted_wall_rate(all_records, player=0)
+    # If MCTS placed no walls at all, wwr is None — that's also acceptable.
+    if wwr is not None:
+        assert wwr <= 0.15, f"wasted_wall_rate={wwr:.3f} exceeds 0.15"
