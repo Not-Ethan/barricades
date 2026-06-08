@@ -1,13 +1,12 @@
 use pyo3::prelude::*;
 
-/// A Python module implemented in Rust.
-#[pymodule]
-mod barricades_native {
-    use pyo3::prelude::*;
+mod bitboard;
+mod coords;
+mod movegen;
+mod pyiface;
+mod state;
 
-    /// Formats the sum of two numbers as string.
-    #[pyfunction]
-    fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-        Ok((a + b).to_string())
-    }
+#[pymodule]
+fn barricades_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    pyiface::register(m)
 }

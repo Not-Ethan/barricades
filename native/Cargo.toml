@@ -9,4 +9,8 @@ name = "barricades_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.28.3"
+pyo3 = { version = "0.28.3", features = ["extension-module"] }
+numpy = "0.28"
+rayon = "1"
+rand = "0.10"
+rand_distr = "0.6"
