@@ -65,13 +65,30 @@ class MCTSAgent(Agent):
     name = "mcts"
 
     def __init__(self, time_budget=1.0, max_sims=100_000, c=1.4,
-                 rollout_cap=40, seed=None):
+                 rollout_cap=40, seed=None, eval_fn=None):
         self.time_budget = time_budget
         self.max_sims = max_sims
         self.c = c
         # rollout_cap kept for API compatibility but no longer used
         self.rollout_cap = rollout_cap
         self._rng = random.Random(seed)
+        # Use the provided eval function or fall back to the default heuristic.
+        self._eval = eval_fn if eval_fn is not None else evaluate
+
+    def _leaf_value(self, state, root_player):
+        """Return a value in [-1, 1] for root_player using self._eval.
+
+        Terminal states return ±1 exactly.  Non-terminal states are evaluated
+        with self._eval and clamped to [-1, 1] via _EVAL_SCALE.
+        """
+        if is_terminal(state):
+            return 1.0 if winner(state) == root_player else -1.0
+        raw = self._eval(state, root_player)
+        if raw >= WIN_SCORE:
+            return 1.0
+        if raw <= -WIN_SCORE:
+            return -1.0
+        return max(-1.0, min(1.0, raw / _EVAL_SCALE))
 
     def _uct_child(self, node, root_player):
         log_n = math.log(node.N)
@@ -107,7 +124,7 @@ class MCTSAgent(Agent):
                 break
             node = self._uct_child(node, root_player)
         # Leaf evaluation: heuristic value (no rollout)
-        v = _heuristic_value(node.state, root_player)
+        v = self._leaf_value(node.state, root_player)
         # Backprop
         while node is not None:
             node.N += 1

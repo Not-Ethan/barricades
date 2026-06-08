@@ -51,17 +51,27 @@ class MinimaxAgent(Agent):
     then other steps, then walls. At non-root search nodes only the `wall_cap`
     most positionally-relevant wall placements are considered (strength cap,
     not a correctness issue).
+
+    Parameters
+    ----------
+    eval_fn:
+        Optional evaluation function with signature ``eval_fn(state, player) -> float``.
+        Defaults to ``None``, which uses the standard ``agents.heuristics.evaluate``.
+        This parameter is backward-compatible: omitting it preserves existing behaviour.
     """
 
     name = "minimax"
 
-    def __init__(self, time_budget=1.0, max_depth=64, wall_cap=12, seed=None):
+    def __init__(self, time_budget=1.0, max_depth=64, wall_cap=12, seed=None,
+                 eval_fn=None):
         self.time_budget = time_budget
         self.max_depth = max_depth
         self.wall_cap = wall_cap
         self._rng = random.Random(seed)
         self._nodes = 0
         self._deadline = 0.0
+        # Use the provided eval function or fall back to the default heuristic.
+        self._eval = eval_fn if eval_fn is not None else evaluate
 
     class _Timeout(Exception):
         pass
@@ -71,7 +81,7 @@ class MinimaxAgent(Agent):
         # Evaluate leaves WITHOUT a prior timeout check so that depth-1 always
         # completes (guarantees a move exists even under a tiny budget).
         if is_terminal(state) or depth == 0:
-            return evaluate(state, root_player)
+            return self._eval(state, root_player)
         if time.monotonic() > self._deadline:
             raise MinimaxAgent._Timeout()
         maximizing = state.turn == root_player
