@@ -62,10 +62,14 @@ export class Board {
     // Callback hooks set by main.js
     this.onStep = null;   // (col, row) => void
     this.onWall = null;   // ({c, r, orient}) => void
+    this.onEditCell = null;  // (cell, piece) => void  — edit mode, pawn click
+    this.onEditWall = null;  // (slot) => void         — edit mode, wall click
 
     // Internal state
     this._state = null;
     this._mode = "move";       // "move" | "wall"
+    this._editMode = false;    // true when in Setup/Edit mode
+    this._editGetPiece = null; // () => "red"|"blue"|"wall"
     this._legalSteps = [];
     this._previewWall = null;  // {c, r, orient, ok}
     this._hoverCell = null;    // [col, row] | null
@@ -108,6 +112,19 @@ export class Board {
 
   setMode(mode) {
     this._mode = mode;
+    this._previewWall = null;
+    this._hoverCell = null;
+    this._draw();
+  }
+
+  /**
+   * Enable or disable edit mode.
+   * @param {boolean} enabled
+   * @param {(() => "red"|"blue"|"wall")|null} getSelectedPiece
+   */
+  setEditMode(enabled, getSelectedPiece = null) {
+    this._editMode = enabled;
+    this._editGetPiece = getSelectedPiece;
     this._previewWall = null;
     this._hoverCell = null;
     this._draw();
@@ -384,6 +401,24 @@ export class Board {
     if (!this._state) return;
     const { px, py } = this._pointerPos(e);
 
+    if (this._editMode) {
+      const piece = this._editGetPiece ? this._editGetPiece() : "red";
+      if (piece === "wall") {
+        const slot = this.wallSlotAt(px, py);
+        if (slot) {
+          // In edit mode, show preview as "ok" (green) — validity determined on click
+          this.previewWall(slot, true);
+        } else {
+          this.previewWall(null, false);
+        }
+      } else {
+        const cell = this.cellAt(px, py);
+        this._hoverCell = cell;
+        this._draw();
+      }
+      return;
+    }
+
     if (this._mode === "wall") {
       const slot = this.wallSlotAt(px, py);
       if (slot) {
@@ -408,6 +443,19 @@ export class Board {
   _onClick(e) {
     if (!this._state) return;
     const { px, py } = this._pointerPos(e);
+
+    if (this._editMode) {
+      // Edit mode: dispatch to edit callbacks based on selected piece type
+      const piece = this._editGetPiece ? this._editGetPiece() : "red";
+      if (piece === "wall") {
+        const slot = this.wallSlotAt(px, py);
+        if (slot && this.onEditWall) this.onEditWall(slot);
+      } else {
+        const cell = this.cellAt(px, py);
+        if (cell && this.onEditCell) this.onEditCell(cell, piece);
+      }
+      return;
+    }
 
     if (this._mode === "wall") {
       const slot = this.wallSlotAt(px, py);
