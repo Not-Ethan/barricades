@@ -35,13 +35,19 @@ class QuoridorNet(nn.Module):
                                     nn.BatchNorm2d(1), nn.ReLU())
         self.v_fc1 = nn.Linear(9 * 9, 64)
         self.v_fc2 = nn.Linear(64, 1)
+        self.d_conv = nn.Sequential(nn.Conv2d(channels, 1, 1),
+                                    nn.BatchNorm2d(1), nn.ReLU())
+        self.d_fc1 = nn.Linear(9 * 9, 64)
+        self.d_fc2 = nn.Linear(64, 1)
 
     def forward(self, x):
         x = self.body(self.stem(x))
         p = self.p_fc(self.p_conv(x).flatten(1))
         v = self.v_conv(x).flatten(1)
         v = torch.tanh(self.v_fc2(F.relu(self.v_fc1(v))))
-        return p, v
+        d = self.d_conv(x).flatten(1)
+        d = self.d_fc2(F.relu(self.d_fc1(d)))   # no squashing: regresses path_diff/norm
+        return p, v, d
 
 
 class NetWrapper:
@@ -56,7 +62,7 @@ class NetWrapper:
         planes = encode_planes(state)
         x = torch.from_numpy(planes).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            logits, value = self.net(x)
+            logits, value, _dist = self.net(x)
         logits = logits[0].cpu().numpy()
         legal = legal_moves(state)
         idxs = np.array([move_to_action(m, state) for m in legal])

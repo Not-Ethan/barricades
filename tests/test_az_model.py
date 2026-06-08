@@ -9,9 +9,10 @@ from agents.az.model import QuoridorNet, NetWrapper
 def test_forward_shapes():
     net = QuoridorNet(channels=16, blocks=2)
     x = torch.zeros(4, N_PLANES, 9, 9)
-    logits, value = net(x)
+    logits, value, dist = net(x)
     assert logits.shape == (4, N_ACTIONS)
     assert value.shape == (4, 1)
+    assert dist.shape == (4, 1)
     assert torch.all(value <= 1) and torch.all(value >= -1)
 
 

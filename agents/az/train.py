@@ -14,7 +14,7 @@ def examples_to_batch(examples, device="cpu"):
 def train_step(net, optimizer, batch):
     net.train()
     planes, target_pi, target_z = batch
-    logits, value = net(planes)
+    logits, value, _dist = net(planes)
     logp = F.log_softmax(logits, dim=1)
     policy_loss = -(target_pi * logp).sum(dim=1).mean()
     value_loss = F.mse_loss(value, target_z)
