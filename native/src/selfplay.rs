@@ -18,6 +18,13 @@ struct Pending {
     planes: Vec<f32>,
 }
 
+struct Record {
+    planes: Vec<f32>,
+    pi: Vec<f32>,
+    player: usize,
+    feats: [f32; N_FEATS],
+}
+
 enum Phase {
     AwaitingEval,
     ReadyToMove,
@@ -29,7 +36,7 @@ struct Slot {
     sims_done: u32,
     ply: u32,
     phase: Phase,
-    records: Vec<(Vec<f32>, Vec<f32>, usize, [f32; N_FEATS])>,
+    records: Vec<Record>,
     active: bool,
     pending: Option<Pending>,
 }
@@ -122,7 +129,7 @@ impl SelfPlayPool {
         let pre = slot.game;
         let mut planes = vec![0f32; 6 * 81];
         encode_planes(&pre, &mut planes);
-        slot.records.push((planes, pi.to_vec(), pre.turn as usize, features(&pre)));
+        slot.records.push(Record { planes, pi: pi.to_vec(), player: pre.turn as usize, feats: features(&pre) });
         let next = apply_move(&pre, &mv);
         slot.game = next;
         slot.ply += 1;
@@ -139,13 +146,14 @@ impl SelfPlayPool {
         let w = winner(&self.slots[i].game);
         let n = self.slots[i].records.len();
         let recs = std::mem::take(&mut self.slots[i].records);
-        for (k, (planes, pi, player, mut feats)) in recs.into_iter().enumerate() {
+        for (k, rec) in recs.into_iter().enumerate() {
             let z = match w {
                 None => 0.0,
-                Some(win) => if win == player { 1.0 } else { -1.0 },
+                Some(win) => if win == rec.player { 1.0 } else { -1.0 },
             };
+            let mut feats = rec.feats;
             feats[3] = (n - k) as f32;
-            self.out_examples.push(Example { planes, pi, z, feats });
+            self.out_examples.push(Example { planes: rec.planes, pi: rec.pi, z, feats });
         }
         self.finished += 1;
     }
@@ -221,6 +229,10 @@ impl SelfPlayPool {
 
     pub fn drain(&mut self) -> Vec<Example> {
         std::mem::take(&mut self.out_examples)
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.last_pending.len()
     }
 
     pub fn games_remaining(&self) -> u32 {

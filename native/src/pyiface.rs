@@ -180,6 +180,14 @@ impl SelfPlayPool {
     fn feed(&mut self, policy: PyReadonlyArray2<f32>, value: PyReadonlyArray1<f32>) -> PyResult<()> {
         let pol = policy.as_slice()?;
         let val = value.as_slice()?;
+        let m = self.inner.pending_len();
+        if pol.len() != m * 140 || val.len() != m {
+            return Err(PyValueError::new_err(format!(
+                "feed: expected policy ({m}, 140) and value ({m},) matching the last step()'s batch; got policy {} elems, value {} elems",
+                pol.len(),
+                val.len()
+            )));
+        }
         self.inner.feed(pol, val);
         Ok(())
     }
