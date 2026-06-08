@@ -31,6 +31,10 @@ class NativeMctsAgent(Agent):
         self.eval_fn = eval_fn
 
     def select_move(self, state):
+        from core.rules import is_terminal
+        if state.walls_left == (0, 0) and not is_terminal(state):
+            _val, mv = bn.solve_race(_to_native(state))
+            return _from_tuple(mv)
         tree = bn.Tree(_to_native(state), self.c_puct, self.seed)
         if self.eval_fn is None:
             return _from_tuple(tree.run_heuristic(self.sims))

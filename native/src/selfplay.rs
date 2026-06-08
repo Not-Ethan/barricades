@@ -2,6 +2,7 @@ use rayon::prelude::*;
 
 use crate::bitboard::bfs_dist;
 use crate::encoding::encode_planes;
+use crate::endgame::solve_race;
 use crate::mcts::{Leaf, Tree};
 use crate::state::{apply_move, initial_state, is_terminal, winner, GameState};
 
@@ -39,6 +40,7 @@ struct Slot {
     records: Vec<Record>,
     active: bool,
     pending: Option<Pending>,
+    forced_outcome: Option<Option<usize>>,
 }
 
 #[derive(Clone, Copy)]
@@ -50,6 +52,7 @@ pub struct Config {
     pub temp_moves: u32,
     pub max_plies: u32,
     pub carryover: bool,
+    pub endgame_solve: bool,
 }
 
 pub struct SelfPlayPool {
@@ -61,6 +64,7 @@ pub struct SelfPlayPool {
     finished: u32,
     out_examples: Vec<Example>,
     last_pending: Vec<usize>,
+    solved_games: u32,
 }
 
 fn features(g: &GameState) -> [f32; N_FEATS] {
@@ -77,15 +81,18 @@ impl SelfPlayPool {
         let mut launched = 0u32;
         for _ in 0..n_games.min(total_games) {
             let g = initial_state();
+            let mut tree = Tree::new(g, cfg.c_puct, next_seed);
+            tree.set_endgame_solve(cfg.endgame_solve);
             slots.push(Slot {
                 game: g,
-                tree: Tree::new(g, cfg.c_puct, next_seed),
+                tree,
                 sims_done: 0,
                 ply: 0,
                 phase: Phase::AwaitingEval,
                 records: Vec::new(),
                 active: true,
                 pending: None,
+                forced_outcome: None,
             });
             next_seed = next_seed.wrapping_add(1);
             launched += 1;
@@ -93,6 +100,7 @@ impl SelfPlayPool {
         SelfPlayPool {
             slots, cfg, next_seed, launched, total_games,
             finished: 0, out_examples: Vec::new(), last_pending: Vec::new(),
+            solved_games: 0,
         }
     }
 
@@ -103,12 +111,14 @@ impl SelfPlayPool {
             self.next_seed = self.next_seed.wrapping_add(1);
             self.slots[i].game = g;
             self.slots[i].tree = Tree::new(g, self.cfg.c_puct, seed);
+            self.slots[i].tree.set_endgame_solve(self.cfg.endgame_solve);
             self.slots[i].sims_done = 0;
             self.slots[i].ply = 0;
             self.slots[i].phase = Phase::AwaitingEval;
             self.slots[i].records.clear();
             self.slots[i].active = true;
             self.slots[i].pending = None;
+            self.slots[i].forced_outcome = None;
             self.launched += 1;
         } else {
             self.slots[i].active = false;
@@ -134,9 +144,30 @@ impl SelfPlayPool {
         let next = apply_move(&pre, &mv);
         slot.game = next;
         slot.ply += 1;
-        if is_terminal(&next) || slot.ply >= cfg.max_plies {
-            return false;
+        let ply = slot.ply;
+        if is_terminal(&next) {
+            return false; // natural win -> finalize uses winner(next)
         }
+        if cfg.endgame_solve && next.walls_left == [0, 0] {
+            let (val_mover, _) = solve_race(&next);
+            let w = if val_mover > 0 {
+                Some(next.turn as usize)
+            } else if val_mover < 0 {
+                Some(1 - next.turn as usize)
+            } else {
+                None // draw at bound
+            };
+            // `slot` (a &mut self.slots[i] borrow) is no longer used past this
+            // point; compute w into a local, then write through self.* and
+            // return immediately (re-borrowing self.slots[i] is fine here).
+            self.slots[i].forced_outcome = Some(w);
+            self.solved_games += 1;
+            return false; // truncate: race is decided
+        }
+        if ply >= cfg.max_plies {
+            return false; // cap -> draw
+        }
+        let slot = &mut self.slots[i];
         if cfg.carryover {
             slot.tree.advance(mv);
             slot.sims_done = slot.tree.root_visits().min(cfg.sims);
@@ -149,6 +180,7 @@ impl SelfPlayPool {
             }
         } else {
             slot.tree = Tree::new(next, cfg.c_puct, seed);
+            slot.tree.set_endgame_solve(cfg.endgame_solve);
             slot.sims_done = 0;
         }
         slot.phase = Phase::AwaitingEval;
@@ -156,7 +188,10 @@ impl SelfPlayPool {
     }
 
     fn finalize(&mut self, i: usize) {
-        let w = winner(&self.slots[i].game);
+        let w = match self.slots[i].forced_outcome {
+            Some(fw) => fw,
+            None => winner(&self.slots[i].game),
+        };
         let n = self.slots[i].records.len();
         let recs = std::mem::take(&mut self.slots[i].records);
         for (k, rec) in recs.into_iter().enumerate() {
@@ -254,5 +289,9 @@ impl SelfPlayPool {
 
     pub fn active(&self) -> usize {
         self.slots.iter().filter(|s| s.active).count()
+    }
+
+    pub fn games_solved(&self) -> u32 {
+        self.solved_games
     }
 }

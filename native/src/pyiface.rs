@@ -198,12 +198,13 @@ impl SelfPlayPool {
     #[new]
     #[pyo3(signature = (n_games, total_games, sims, c_puct=1.5, seed=0,
                         dirichlet_alpha=0.5, dirichlet_eps=0.25,
-                        temp_moves=10, max_plies=200, carryover=true))]
+                        temp_moves=10, max_plies=200, carryover=true,
+                        endgame_solve=false))]
     fn new(n_games: u32, total_games: u32, sims: u32, c_puct: f64, seed: u64,
            dirichlet_alpha: f64, dirichlet_eps: f64, temp_moves: u32, max_plies: u32,
-           carryover: bool) -> SelfPlayPool {
+           carryover: bool, endgame_solve: bool) -> SelfPlayPool {
         let cfg = Config { sims, c_puct, dirichlet_alpha, dirichlet_eps,
-                           temp_moves, max_plies, carryover };
+                           temp_moves, max_plies, carryover, endgame_solve };
         SelfPlayPool { inner: CorePool::new(n_games, total_games, cfg, seed) }
     }
 
@@ -248,6 +249,10 @@ impl SelfPlayPool {
 
     fn active(&self) -> usize {
         self.inner.active()
+    }
+
+    fn games_solved(&self) -> u32 {
+        self.inner.games_solved()
     }
 }
 

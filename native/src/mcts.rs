@@ -32,6 +32,12 @@ pub struct Tree {
     parked: Option<usize>,
     noised: bool,
     rng: StdRng,
+    // When true, race leaves (walls_left==[0,0], non-root) are scored EXACTLY by
+    // the endgame solver instead of the net/heuristic. Default true (inference);
+    // self-play sets it from Config.endgame_solve. Off in default-mode self-play
+    // because exact ±1 leaves carry no distance gradient, so a search shallower
+    // than the race length can't drive pawns to goal -> games stall to the cap.
+    endgame_solve: bool,
 }
 
 impl Tree {
@@ -54,7 +60,12 @@ impl Tree {
             parked: None,
             noised: false,
             rng: StdRng::seed_from_u64(seed),
+            endgame_solve: true,
         }
+    }
+
+    pub fn set_endgame_solve(&mut self, on: bool) {
+        self.endgame_solve = on;
     }
 
     fn select_child(&self, node: usize) -> usize {
@@ -132,6 +143,24 @@ impl Tree {
             self.backup(node, v);
             return Leaf::Terminal;
         }
+        // Exact endgame eval at race leaves. Skip the root so the root still
+        // gets expanded (children are needed for best_move / pi); the root's
+        // own value is irrelevant to move selection, and its children — being
+        // non-root (0,0) leaves — still receive exact endgame backups here.
+        if self.endgame_solve
+            && node != self.root as usize
+            && self.nodes[node].state.walls_left == [0, 0]
+        {
+            let st = self.nodes[node].state;
+            let (val_mover, _) = crate::endgame::solve_race(&st);
+            let v = if st.turn as usize == self.root_player {
+                val_mover as f64
+            } else {
+                -(val_mover as f64)
+            };
+            self.backup(node, v);
+            return Leaf::Terminal; // exact value, no net eval needed
+        }
         crate::encoding::encode_planes(&self.nodes[node].state, planes_out);
         self.parked = Some(node);
         Leaf::Parked
@@ -167,6 +196,22 @@ impl Tree {
                 let v = if w == self.root_player { 1.0 } else { -1.0 };
                 self.backup(node, v);
                 continue;
+            }
+            // Exact endgame eval at race leaves. Skip the root (see prepare_leaf):
+            // the root must still expand so best_move has children.
+            if self.endgame_solve
+                && node != self.root as usize
+                && self.nodes[node].state.walls_left == [0, 0]
+            {
+                let st = self.nodes[node].state;
+                let (val_mover, _) = crate::endgame::solve_race(&st);
+                let v = if st.turn as usize == self.root_player {
+                    val_mover as f64
+                } else {
+                    -(val_mover as f64)
+                };
+                self.backup(node, v);
+                continue; // exact value, no heuristic eval needed
             }
             let val = Tree::heuristic_value(&self.nodes[node].state);
             self.expand_with_policy(node, &uniform, val);
