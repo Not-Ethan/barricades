@@ -92,10 +92,18 @@ def create_app():
         return {"state": state_payload(game),
                 "analysis": analysis_to_dict(analysis)}
 
+    import asyncio
+
     from fastapi import WebSocket, WebSocketDisconnect
+    from core.rules import is_terminal
 
     @app.websocket("/games/{gid}/stream")
     async def stream(ws: WebSocket, gid: str):
+        # Engine-vs-engine streaming is CLIENT-DRIVEN: the client requests one
+        # move at a time via {"action": "step"}, so the server's game state never
+        # races ahead of the display. Playback cadence and pause/step are handled
+        # entirely on the client (it simply stops/starts requesting). The engine
+        # search runs off the event loop so a move never blocks other I/O.
         await ws.accept()
         try:
             game = store.get(gid)
@@ -104,8 +112,7 @@ def create_app():
             await ws.close()
             return
 
-        def one_engine_move():
-            from core.rules import is_terminal
+        async def next_move_msg():
             if is_terminal(game.state):
                 return {"state": state_payload(game), "analysis": None,
                         "done": True}
@@ -113,7 +120,7 @@ def create_app():
             if isinstance(spec, str) and spec == "human":
                 return {"error": "side to move is human"}
             agent = _make_controller_agent(spec)
-            analysis = agent.analyze(game.state)
+            analysis = await asyncio.to_thread(agent.analyze, game.state)
             game.apply(analysis.best_move)
             return {"state": state_payload(game),
                     "analysis": analysis_to_dict(analysis)}
@@ -121,20 +128,11 @@ def create_app():
         try:
             while True:
                 cmd = await ws.receive_json()
-                action = cmd.get("action")
-                if action == "step":
-                    await ws.send_json(one_engine_move())
-                elif action == "play":
-                    from core.rules import is_terminal
-                    while not is_terminal(game.state):
-                        msg = one_engine_move()
-                        await ws.send_json(msg)
-                        if "error" in msg:
-                            break
-                elif action == "pause":
-                    await ws.send_json({"paused": True})
+                if cmd.get("action") == "step":
+                    await ws.send_json(await next_move_msg())
                 else:
-                    await ws.send_json({"error": f"unknown action {action!r}"})
+                    await ws.send_json(
+                        {"error": f"unknown action {cmd.get('action')!r}"})
         except WebSocketDisconnect:
             return
 

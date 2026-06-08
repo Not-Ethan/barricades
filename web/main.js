@@ -48,6 +48,10 @@ let mode     = "move"; // "move" | "wall"
 let analysis = null;   // latest analysis dict or null
 let eveWs    = null;   // active WebSocket for engine-vs-engine, or null
 let evePaused = false;
+let eveGen    = 0;     // bumped whenever the EvE stream is (re)started/closed;
+                       // in-flight async callbacks bail when their captured gen
+                       // no longer matches (prevents stale renders after New Game)
+let eveWaiting = false; // true while a step request is in flight (one at a time)
 
 const board = new Board(canvas);
 board.onStep = onCellClick;
@@ -223,66 +227,93 @@ btnEveStart.addEventListener("click", () => {
 });
 
 btnEveStep.addEventListener("click", () => {
-  if (eveWs && eveWs.readyState === WebSocket.OPEN) {
+  // Advance exactly one move (also works while paused). At most one request in
+  // flight, so it can never run ahead of the display.
+  if (eveWs && eveWs.readyState === WebSocket.OPEN && !eveWaiting &&
+      !(state && state.winner !== null)) {
+    eveWaiting = true;
     eveWs.send(JSON.stringify({ action: "step" }));
   }
 });
 
 btnEvePause.addEventListener("click", () => {
-  if (eveWs && eveWs.readyState === WebSocket.OPEN) {
-    evePaused = !evePaused;
-    if (!evePaused) {
-      eveWs.send(JSON.stringify({ action: "play" }));
-    } else {
-      eveWs.send(JSON.stringify({ action: "pause" }));
-    }
-    btnEvePause.textContent = evePaused ? "Resume" : "Pause";
-  }
+  // Pause/resume is purely client-side: stop or restart requesting moves. The
+  // server is request-driven, so it's already exactly at the displayed move.
+  if (!eveWs) return;
+  evePaused = !evePaused;
+  btnEvePause.textContent = evePaused ? "Resume" : "Pause";
+  if (!evePaused) eveRequestNext();
 });
 
 speedSlider.addEventListener("input", () => {
   speedLabel.textContent = `${speedSlider.value}ms`;
 });
 
+/**
+ * Request the next engine move — one at a time — unless paused, finished, or a
+ * request is already in flight. Each response (handled in startEvE) paces by the
+ * speed slider and then calls this again, forming the auto-play loop. Because
+ * only one request is ever outstanding, the server never runs ahead of the
+ * displayed position, so pause/step are exact and there is nothing to buffer.
+ */
+function eveRequestNext() {
+  if (!eveWs || eveWs.readyState !== WebSocket.OPEN) return;
+  if (evePaused || eveWaiting) return;
+  if (state && state.winner !== null) return;
+  eveWaiting = true;
+  eveWs.send(JSON.stringify({ action: "step" }));
+}
+
 function startEvE() {
-  closeEveWs();
+  closeEveWs();           // bumps eveGen and closes any prior stream
+  const myGen = eveGen;   // this stream owns the current generation
   evePaused = false;
+  eveWaiting = false;
   btnEvePause.textContent = "Pause";
 
-  let lastMsgTime = 0;
-
   eveWs = openStream(gameId, async (msg) => {
+    if (myGen !== eveGen) return;   // superseded (New Game / restart) — ignore
+    eveWaiting = false;
     if (msg.error) {
       showError("Stream error: " + msg.error);
       return;
     }
     if (msg.state) {
-      // Pace rendering by speed slider delay
-      const delay = parseInt(speedSlider.value, 10);
-      const now = Date.now();
-      const elapsed = now - lastMsgTime;
-      if (elapsed < delay) {
-        await sleep(delay - elapsed);
-      }
-      lastMsgTime = Date.now();
-
       state = msg.state;
       analysis = msg.analysis || null;
       refreshFromState(state, analysis);
     }
     if (msg.done || (msg.state && msg.state.winner !== null)) {
-      // Game over
-      closeEveWs();
+      closeEveWs();                 // game over
+      return;
     }
+    // Pace, then request the next move (re-checking we're still the live stream
+    // after the async gap — a New Game during the delay must not resume us).
+    const delay = parseInt(speedSlider.value, 10);
+    if (delay > 0) await sleep(delay);
+    if (myGen !== eveGen) return;
+    eveRequestNext();
   });
 
-  // Send "play" to start auto-stepping
   eveWs.addEventListener("open", () => {
-    eveWs.send(JSON.stringify({ action: "play" }));
+    if (myGen !== eveGen) return;
+    eveRequestNext();               // kick off the first move
+  });
+
+  // An ABNORMAL close (server gone, network drop) leaves the loop with no reply.
+  // Our own intentional closes bump eveGen first, so they bail this check.
+  eveWs.addEventListener("close", () => {
+    if (myGen !== eveGen) return;
+    eveWaiting = false;
+    if (state && state.winner === null) showError("Engine stream closed.");
   });
 }
 
 function closeEveWs() {
+  eveGen++;            // invalidate any in-flight callbacks/pending timers
+  eveWaiting = false;
+  evePaused = false;                  // keep the Pause/Resume label honest
+  btnEvePause.textContent = "Pause";
   if (eveWs) {
     eveWs.close();
     eveWs = null;
