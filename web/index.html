@@ -18,108 +18,247 @@
     </div>
 
     <aside id="sidebar">
-      <!-- New game controls -->
-      <section id="new-game-section">
-        <h2>New Game</h2>
-        <div class="control-row">
-          <label>Player 1:
-            <select id="ctrl-0">
-              <option value="human">Human</option>
-            </select>
-          </label>
-        </div>
-        <div class="control-row">
-          <label>Player 2:
-            <select id="ctrl-1">
-              <option value="human">Human</option>
-            </select>
-          </label>
-        </div>
-        <button id="btn-new-game">New Game</button>
-      </section>
 
-      <!-- Game info -->
-      <section id="game-info">
-        <h2>Game Info</h2>
-        <div class="info-row">
-          <span class="player-0-label">Player 1 (red)</span>
-          <span id="walls-left-0" class="walls-count">10 walls</span>
-        </div>
-        <div class="info-row">
-          <span class="player-1-label">Player 2 (blue)</span>
-          <span id="walls-left-1" class="walls-count">10 walls</span>
-        </div>
-        <div class="info-row">
-          <span>Move:</span>
-          <span id="move-count">0</span>
-        </div>
-      </section>
-
-      <!-- Move mode controls -->
-      <section id="mode-section">
-        <h2>Input Mode</h2>
-        <div class="control-row">
-          <label>
-            <input type="radio" name="mode" value="move" checked /> Move pawn
+      <!-- Top-level mode switch: Play vs Setup/Analysis -->
+      <section id="app-mode-section">
+        <h2>Mode</h2>
+        <div class="control-row" id="app-mode-radios" style="flex-direction:row;gap:12px;">
+          <label style="flex-direction:row;align-items:center;gap:4px;">
+            <input type="radio" name="app-mode" value="play" checked /> Play
           </label>
-          <label>
-            <input type="radio" name="mode" value="wall" /> Place wall
-          </label>
-        </div>
-        <button id="btn-undo">Undo</button>
-      </section>
-
-      <!-- Engine vs engine controls -->
-      <section id="eve-section">
-        <h2>Engine vs Engine</h2>
-        <div class="control-row">
-          <button id="btn-eve-start">Start</button>
-          <button id="btn-eve-step">Step</button>
-          <button id="btn-eve-pause">Pause</button>
-        </div>
-        <div class="control-row">
-          <label>Speed:
-            <input type="range" id="speed-slider" min="0" max="1000" value="200" step="50" />
-            <span id="speed-label">200ms</span>
+          <label style="flex-direction:row;align-items:center;gap:4px;">
+            <input type="radio" name="app-mode" value="setup" /> Setup / Analysis
           </label>
         </div>
       </section>
 
-      <!-- Analysis panel -->
-      <section id="analysis-section">
-        <h2>
-          Analysis
-          <button id="btn-toggle-analysis" class="toggle-btn">Hide</button>
-        </h2>
-        <div id="analysis-body">
-          <div class="info-row">
-            <span>Eval:</span>
-            <span id="analysis-value">—</span>
-          </div>
-          <div class="info-row">
-            <span>Nodes:</span>
-            <span id="analysis-nodes">—</span>
-          </div>
-          <div class="info-row">
-            <span>Depth:</span>
-            <span id="analysis-depth">—</span>
-          </div>
-          <div class="info-row">
-            <span>Time:</span>
-            <span id="analysis-time">—</span>
-          </div>
-          <div id="candidates-section">
-            <strong>Candidates:</strong>
-            <ol id="candidates-list"></ol>
-          </div>
-          <div class="info-row">
-            <label>
-              <input type="checkbox" id="show-best-move" checked />
-              Highlight best move
+      <!-- ========== PLAY CONTROLS (visible in Play mode) ========== -->
+      <div id="play-controls">
+
+        <!-- New game controls -->
+        <section id="new-game-section">
+          <h2>New Game</h2>
+          <div class="control-row">
+            <label>Player 1:
+              <select id="ctrl-0">
+                <option value="human">Human</option>
+              </select>
             </label>
           </div>
-        </div>
-      </section>
+          <div class="control-row">
+            <label>Player 2:
+              <select id="ctrl-1">
+                <option value="human">Human</option>
+              </select>
+            </label>
+          </div>
+          <button id="btn-new-game">New Game</button>
+        </section>
+
+        <!-- Game info -->
+        <section id="game-info">
+          <h2>Game Info</h2>
+          <div class="info-row">
+            <span class="player-0-label">Player 1 (red)</span>
+            <span id="walls-left-0" class="walls-count">10 walls</span>
+          </div>
+          <div class="info-row">
+            <span class="player-1-label">Player 2 (blue)</span>
+            <span id="walls-left-1" class="walls-count">10 walls</span>
+          </div>
+          <div class="info-row">
+            <span>Move:</span>
+            <span id="move-count">0</span>
+          </div>
+        </section>
+
+        <!-- Move mode controls -->
+        <section id="mode-section">
+          <h2>Input Mode</h2>
+          <div class="control-row">
+            <label>
+              <input type="radio" name="mode" value="move" checked /> Move pawn
+            </label>
+            <label>
+              <input type="radio" name="mode" value="wall" /> Place wall
+            </label>
+          </div>
+          <button id="btn-undo">Undo</button>
+        </section>
+
+        <!-- Engine vs engine controls -->
+        <section id="eve-section">
+          <h2>Engine vs Engine</h2>
+          <div class="control-row">
+            <button id="btn-eve-start">Start</button>
+            <button id="btn-eve-step">Step</button>
+            <button id="btn-eve-pause">Pause</button>
+          </div>
+          <div class="control-row">
+            <label>Speed:
+              <input type="range" id="speed-slider" min="0" max="1000" value="200" step="50" />
+              <span id="speed-label">200ms</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Analysis panel (play mode) -->
+        <section id="analysis-section">
+          <h2>
+            Analysis
+            <button id="btn-toggle-analysis" class="toggle-btn">Hide</button>
+          </h2>
+          <div id="analysis-body">
+            <div class="info-row">
+              <span>Eval:</span>
+              <span id="analysis-value">—</span>
+            </div>
+            <div class="info-row">
+              <span>Nodes:</span>
+              <span id="analysis-nodes">—</span>
+            </div>
+            <div class="info-row">
+              <span>Depth:</span>
+              <span id="analysis-depth">—</span>
+            </div>
+            <div class="info-row">
+              <span>Time:</span>
+              <span id="analysis-time">—</span>
+            </div>
+            <div id="candidates-section">
+              <strong>Candidates:</strong>
+              <ol id="candidates-list"></ol>
+            </div>
+            <div class="info-row">
+              <label>
+                <input type="checkbox" id="show-best-move" checked />
+                Highlight best move
+              </label>
+            </div>
+          </div>
+        </section>
+
+      </div><!-- end #play-controls -->
+
+      <!-- ========== SETUP/ANALYSIS CONTROLS (visible in Setup mode) ========== -->
+      <div id="setup-controls" class="hidden">
+
+        <!-- Piece selector -->
+        <section id="setup-piece-section">
+          <h2>Setup Board</h2>
+          <div class="control-row">
+            <strong style="font-size:12px;color:#555;margin-bottom:2px;">Place piece:</strong>
+            <label style="flex-direction:row;align-items:center;gap:4px;">
+              <input type="radio" name="setup-piece" value="red" checked /> Red pawn
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:4px;">
+              <input type="radio" name="setup-piece" value="blue" /> Blue pawn
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:4px;">
+              <input type="radio" name="setup-piece" value="wall" /> Wall (toggle)
+            </label>
+          </div>
+
+          <!-- Walls remaining -->
+          <div class="control-row" style="margin-top:6px;">
+            <strong style="font-size:12px;color:#555;margin-bottom:2px;">Walls remaining:</strong>
+            <div class="info-row">
+              <label class="player-0-label" style="font-weight:600;color:#c0392b;">Red:</label>
+              <input type="number" id="setup-walls-0" min="0" max="10" value="10"
+                     style="width:54px;padding:3px 5px;border:1px solid #ccc;border-radius:4px;font-size:13px;" />
+            </div>
+            <div class="info-row">
+              <label class="player-1-label" style="font-weight:600;color:#2980b9;">Blue:</label>
+              <input type="number" id="setup-walls-1" min="0" max="10" value="10"
+                     style="width:54px;padding:3px 5px;border:1px solid #ccc;border-radius:4px;font-size:13px;" />
+            </div>
+          </div>
+
+          <!-- Turn selector -->
+          <div class="control-row" style="margin-top:6px;">
+            <strong style="font-size:12px;color:#555;margin-bottom:2px;">Turn:</strong>
+            <label style="flex-direction:row;align-items:center;gap:4px;">
+              <input type="radio" name="setup-turn" value="0" checked /> Red (Player 1)
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:4px;">
+              <input type="radio" name="setup-turn" value="1" /> Blue (Player 2)
+            </label>
+          </div>
+
+          <!-- Reset / Clear buttons -->
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <button id="btn-setup-reset" style="flex:1;">Reset to start</button>
+            <button id="btn-setup-clear-walls" style="flex:1;">Clear walls</button>
+          </div>
+        </section>
+
+        <!-- Analyze section -->
+        <section id="setup-analyze-section">
+          <h2>Analyze Position</h2>
+
+          <!-- Budget -->
+          <div class="control-row">
+            <label>Budget:
+              <select id="setup-budget">
+                <option value="0.1">Fast (0.1s)</option>
+                <option value="0.5" selected>Normal (0.5s)</option>
+              </select>
+            </label>
+          </div>
+
+          <!-- Engine selectors -->
+          <div class="control-row">
+            <label>Engine 1:
+              <select id="setup-engine-0">
+                <option value="minimax">Minimax</option>
+              </select>
+            </label>
+          </div>
+          <div class="control-row">
+            <label>Engine 2:
+              <select id="setup-engine-1">
+                <option value="mcts">Mcts</option>
+              </select>
+            </label>
+          </div>
+
+          <button id="btn-analyze" style="width:100%;margin-top:4px;background:#1a5276;color:#fff;border-color:#154360;">Analyze</button>
+
+          <!-- Legality / error line -->
+          <div id="setup-legality" style="margin-top:6px;font-size:12px;min-height:16px;"></div>
+
+          <!-- Static eval -->
+          <div class="info-row" style="margin-top:4px;">
+            <span style="font-size:12px;color:#555;">Static eval (side-to-move):</span>
+            <span id="setup-static-eval" style="font-weight:600;">—</span>
+          </div>
+
+          <!-- Two-column engine comparison -->
+          <div id="setup-engine-compare" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div id="setup-engine-col-0" class="engine-col">
+              <div class="engine-col-header" id="setup-engine-name-0" style="font-weight:700;font-size:12px;color:#555;margin-bottom:4px;">Engine 1</div>
+              <div class="info-row"><span style="font-size:11px;color:#777;">Eval:</span><span id="setup-engine-val-0" style="font-size:12px;font-weight:600;">—</span></div>
+              <div class="info-row"><span style="font-size:11px;color:#777;">Best:</span><span id="setup-engine-best-0" style="font-size:11px;">—</span></div>
+              <div style="margin-top:4px;">
+                <div style="font-size:11px;color:#777;margin-bottom:2px;">Candidates:</div>
+                <ol id="setup-candidates-0" style="list-style:decimal inside;font-size:11px;color:#333;max-height:90px;overflow-y:auto;border:1px solid #eee;border-radius:3px;padding:3px 6px;"></ol>
+              </div>
+            </div>
+            <div id="setup-engine-col-1" class="engine-col">
+              <div class="engine-col-header" id="setup-engine-name-1" style="font-weight:700;font-size:12px;color:#555;margin-bottom:4px;">Engine 2</div>
+              <div class="info-row"><span style="font-size:11px;color:#777;">Eval:</span><span id="setup-engine-val-1" style="font-size:12px;font-weight:600;">—</span></div>
+              <div class="info-row"><span style="font-size:11px;color:#777;">Best:</span><span id="setup-engine-best-1" style="font-size:11px;">—</span></div>
+              <div style="margin-top:4px;">
+                <div style="font-size:11px;color:#777;margin-bottom:2px;">Candidates:</div>
+                <ol id="setup-candidates-1" style="list-style:decimal inside;font-size:11px;color:#333;max-height:90px;overflow-y:auto;border:1px solid #eee;border-radius:3px;padding:3px 6px;"></ol>
+              </div>
+            </div>
+          </div>
+
+        </section>
+
+      </div><!-- end #setup-controls -->
+
     </aside>
   </div>
 

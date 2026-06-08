@@ -17,3 +17,21 @@ class MoveIn(BaseModel):
     c: int | None = None
     r: int | None = None
     orient: str | None = None
+
+
+class EngineSpec(BaseModel):
+    name: str
+    params: dict = {}
+
+
+class PositionIn(BaseModel):
+    pawns: list[list[int]]
+    h_walls: list[list[int]] = []
+    v_walls: list[list[int]] = []
+    walls_left: list[int]
+    turn: int
+
+
+class AnalyzeRequest(BaseModel):
+    position: PositionIn
+    engines: list[EngineSpec] = []

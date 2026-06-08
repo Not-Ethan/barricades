@@ -59,6 +59,19 @@ export async function engineMove(id) {
 }
 
 /**
+ * POST /analyze → analysis response.
+ * @param {object} position - { pawns, h_walls, v_walls, walls_left, turn }
+ * @param {Array<{name:string,params:object}>} engines
+ */
+export async function analyzePosition(position, engines) {
+  return _json(await fetch(`${BASE}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ position, engines }),
+  }));
+}
+
+/**
  * Open a WebSocket to /games/{id}/stream.
  * @param {string} id
  * @param {(msg: object) => void} onMessage

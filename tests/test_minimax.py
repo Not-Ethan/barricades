@@ -59,3 +59,33 @@ def test_respects_time_budget():
 
 def test_name_and_params():
     assert MinimaxAgent().name == "minimax"
+
+
+def test_tiebreak_is_deterministic_no_oscillation():
+    # Regression: equally-scored moves must be broken DETERMINISTICALLY so the
+    # agent doesn't flip tied choices turn-to-turn (which showed up in play as
+    # oscillation / "random" walls). Fixed max_depth avoids timing jitter.
+    import random
+    from core.rules import apply_move, is_terminal, legal_moves
+    rng = random.Random(7)
+    s = initial_state()
+    checked = 0
+    for _ in range(12):
+        if is_terminal(s):
+            break
+        chosen = {
+            repr(MinimaxAgent(time_budget=5.0, max_depth=2, seed=k).select_move(s))
+            for k in range(4)
+        }
+        assert len(chosen) == 1, f"non-deterministic move at step {checked}: {chosen}"
+        checked += 1
+        s = apply_move(s, rng.choice(legal_moves(s)))
+    assert checked >= 8
+
+
+def test_conserves_walls_on_open_board():
+    # On the open board, advancing (a step) is at least as good as any wall, so
+    # the agent should step rather than burn a wall.
+    from core.state import Step
+    mv = MinimaxAgent(time_budget=0.3, seed=0).select_move(initial_state())
+    assert isinstance(mv, Step)
