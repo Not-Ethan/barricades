@@ -16,30 +16,31 @@ from agents.az.model import QuoridorNet
 
 
 def run_selfplay(total_games=256, n_games=256, sims=100, device="mps",
-                 channels=32, blocks=3, ckpt=None, seed=0):
+                 channels=32, blocks=3, ckpt=None, seed=0,
+                 max_plies=200, temp_moves=10):
     net = QuoridorNet(channels=channels, blocks=blocks)
     if ckpt and os.path.exists(ckpt):
         net.load_state_dict(torch.load(ckpt, map_location="cpu")["model"])
     net = net.to(device).eval()
 
     pool = bn.SelfPlayPool(n_games=n_games, total_games=total_games, sims=sims,
-                           seed=seed)
+                           seed=seed, max_plies=max_plies, temp_moves=temp_moves)
     examples, batches, batch_pos = [], 0, 0
     t0 = time.perf_counter()
     while pool.games_remaining() > 0:
         planes = pool.step()
-        if planes is None:
-            continue
-        x = torch.from_numpy(np.asarray(planes)).to(device)
-        with torch.no_grad():
-            logits, value = net(x)
-            policy = torch.softmax(logits, dim=1).cpu().numpy()
-            value = value.squeeze(1).cpu().numpy()
-        pool.feed(np.ascontiguousarray(policy, dtype=np.float32),
-                  np.ascontiguousarray(value, dtype=np.float32))
-        examples.extend(pool.drain())
-        batches += 1
-        batch_pos += x.shape[0]
+        if planes is not None:
+            x = torch.from_numpy(np.asarray(planes)).to(device)
+            with torch.no_grad():
+                logits, value = net(x)
+                policy = torch.softmax(logits, dim=1).cpu().numpy()
+                value = value.squeeze(1).cpu().numpy()
+            pool.feed(np.ascontiguousarray(policy, dtype=np.float32),
+                      np.ascontiguousarray(value, dtype=np.float32))
+            batches += 1
+            batch_pos += x.shape[0]
+        examples.extend(pool.drain())      # drain every iteration, even on a None step
+    examples.extend(pool.drain())          # final drain: capture the last finalize that coincided with a None step
     dt = time.perf_counter() - t0
     return examples, dict(games=total_games, seconds=dt, batches=batches,
                           mean_batch=batch_pos / max(batches, 1),

@@ -38,3 +38,20 @@ def test_pool_produces_wellformed_examples_and_drains_all_games():
         assert abs(float(pi.sum()) - 1.0) < 1e-4
         assert z in (-1.0, 0.0, 1.0)
         assert feats.shape == (4,)  # path_diff, walls_left_own, walls_left_opp, plies_to_end
+
+
+def test_driver_drains_all_examples_no_loss():
+    # Regression: the driver must drain examples even on a step()->None and after
+    # the loop, or the last finalized game's examples are silently lost.
+    # max_plies=12 is below the ~15-ply minimum to reach a goal, so every game
+    # caps at exactly 12 plies => deterministic example count.
+    from scripts.selfplay_native import run_selfplay
+    examples, st = run_selfplay(total_games=4, n_games=4, sims=8, device="cpu",
+                                max_plies=12)
+    assert st["examples"] == len(examples)
+    assert len(examples) == 4 * 12  # no loss across 4 games
+
+    # A single game (the step that finalizes it returns None) must be fully drained.
+    ex1, _ = run_selfplay(total_games=1, n_games=1, sims=8, device="cpu",
+                          max_plies=12)
+    assert len(ex1) == 12
