@@ -56,3 +56,39 @@ def save_checkpoint(net, path):
 def load_checkpoint(net, path):
     net.load_state_dict(torch.load(path, map_location="cpu"))
     return net
+
+
+def form_dense_targets(examples, lam, gamma=0.99, scale=5.0, dist_norm=10.0,
+                       device="cpu"):
+    """examples: (planes(6,9,9), pi(140), z, feats=[path_diff, wl_own, wl_opp, plies_to_end]).
+    v_target = lam*(z*gamma**plies_to_end) + (1-lam)*tanh(path_diff/scale).
+    dist_target = path_diff/dist_norm. Returns (planes, pi, v_target, dist_target) tensors."""
+    planes = torch.from_numpy(np.stack([e[0] for e in examples])).to(device)
+    pi = torch.from_numpy(np.stack([e[1] for e in examples])).to(device)
+    z = np.array([e[2] for e in examples], dtype=np.float32)
+    feats = np.stack([np.asarray(e[3], dtype=np.float32) for e in examples])  # (N,4)
+    path_diff = feats[:, 0]
+    plies = feats[:, 3]
+    shaped = z * (gamma ** plies)
+    potential = np.tanh(path_diff / scale)
+    v_target = lam * shaped + (1.0 - lam) * potential
+    dist_target = path_diff / dist_norm
+    v_t = torch.from_numpy(v_target.astype(np.float32)).unsqueeze(1).to(device)
+    d_t = torch.from_numpy(dist_target.astype(np.float32)).unsqueeze(1).to(device)
+    return planes, pi, v_t, d_t
+
+
+def train_step_dense(net, optimizer, batch, beta=1.0):
+    """3-head train step: policy CE + value MSE + beta * distance MSE."""
+    net.train()
+    planes, target_pi, target_v, target_d = batch
+    logits, value, dist = net(planes)
+    logp = F.log_softmax(logits, dim=1)
+    policy_loss = -(target_pi * logp).sum(dim=1).mean()
+    value_loss = F.mse_loss(value, target_v)
+    dist_loss = F.mse_loss(dist, target_d)
+    loss = policy_loss + value_loss + beta * dist_loss
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return float(loss.item())
