@@ -169,17 +169,18 @@ class MinimaxAgent(Agent):
                     break
             except MinimaxAgent._Timeout:
                 break
-        # Choose the best move. Among moves of EQUAL search value, break ties
-        # DETERMINISTICALLY and sensibly rather than at random: prefer a step
-        # that advances our pawn (smaller resulting shortest path), prefer steps
-        # over walls (never burn a wall that merely ties a step), then fall back
-        # to a stable order. A random tie-break caused visible oscillation and
-        # marginal "random" walls in real play, because the server builds a
-        # fresh, randomly-seeded agent every move and so flipped tied choices
-        # turn-to-turn.
+        # Choose the best move. Break ties among equal-value moves with a
+        # POSITION-SEEDED RNG: random over the tied moves (so genuinely useful
+        # walls that the shallow eval merely "ties" with a step are still played
+        # ~half the time, which preserves strength), but seeded by the position
+        # so the SAME position always resolves the same way. That kills the
+        # turn-to-turn oscillation (the server builds a fresh agent each move, so
+        # an unseeded RNG flipped tied choices every turn) WITHOUT the strength
+        # loss of a deterministic "always advance / conserve walls" rule, which
+        # measured 25% vs the original random tie-break.
         best_val = max(best_scores.values())
         winners = [m for m, v in best_scores.items() if v == best_val]
-        best_move = min(winners, key=lambda m: self._tiebreak_key(state, m))
+        best_move = random.Random(hash(state)).choice(winners)
         candidates = sorted(best_scores.items(), key=lambda kv: kv[1], reverse=True)[:8]
         return Analysis(
             best_move=best_move,
@@ -191,17 +192,6 @@ class MinimaxAgent(Agent):
                 "time_ms": int((time.monotonic() - t0) * 1000),
             },
         )
-
-    def _tiebreak_key(self, state, move):
-        """Deterministic preference among equally-scored moves: advancing steps
-        first (by resulting own shortest path), then walls, then a stable order.
-        Conserves walls (a wall is only chosen when it strictly beats every step)
-        and never oscillates (the choice depends only on the position)."""
-        me = state.turn
-        if isinstance(move, Step):
-            d = shortest_path_len(apply_move(state, move), me)
-            return (0, 10_000 if d is None else d, repr(move))
-        return (1, 0, repr(move))
 
     def select_move(self, state):
         return self.analyze(state).best_move

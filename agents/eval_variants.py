@@ -55,3 +55,27 @@ def evaluate_tempo(state, player: int) -> float:
     tempo = _TEMPO_BONUS if state.turn == player else -_TEMPO_BONUS
 
     return path_term + wall_term + tempo
+
+
+# --- Robustness / reciprocal-distance variant -----------------------------
+# The base evaluate() (path-difference + wall economy + one-step tempo) PLUS a
+# turn-AGNOSTIC reciprocal-distance term that sharpens as a pawn nears its goal.
+# Being close is worth progressively more (1/(d+1)), so the engine values
+# converting a lead and finishing — without the depth-parity noise that made the
+# turn-dependent tempo term hurt search.
+from agents.heuristics import evaluate as _base_evaluate  # noqa: E402
+
+_RECIP_K = 4.0
+
+
+def evaluate_robust(state, player: int) -> float:
+    base = _base_evaluate(state, player)
+    if base >= WIN_SCORE or base <= -WIN_SCORE:
+        return base  # terminal — leave decisive scores untouched
+    opp = 1 - player
+    d_self = shortest_path_len(state, player)
+    d_opp = shortest_path_len(state, opp)
+    eff_self = _UNREACHABLE if d_self is None else d_self
+    eff_opp = _UNREACHABLE if d_opp is None else d_opp
+    recip = _RECIP_K * (1.0 / (eff_self + 1) - 1.0 / (eff_opp + 1))
+    return base + recip
