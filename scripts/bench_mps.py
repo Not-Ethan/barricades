@@ -42,7 +42,7 @@ def bench_train(net, dev, bs, iters=15, warmup=4):
     z = torch.randn(bs, 1, device=dev)
 
     def step():
-        logits, val = net(x)
+        logits, val, _ = net(x)
         loss = -(pi * F.log_softmax(logits, 1)).sum(1).mean() + F.mse_loss(val, z)
         opt.zero_grad(); loss.backward(); opt.step()
 
@@ -60,9 +60,9 @@ def correctness(net):
     net_cpu = net.to("cpu").eval()
     x = torch.randn(16, N_PLANES, 9, 9)
     with torch.no_grad():
-        pc, vc = net_cpu(x)
+        pc, vc, _ = net_cpu(x)
         net_mps = net.to("mps").eval()
-        pm, vm = net_mps(x.to("mps"))
+        pm, vm, _ = net_mps(x.to("mps"))
     pm, vm = pm.cpu(), vm.cpu()
     return (pc - pm).abs().max().item(), (vc - vm).abs().max().item()
 

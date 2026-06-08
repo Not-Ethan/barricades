@@ -35,6 +35,8 @@ class QuoridorNet(nn.Module):
                                     nn.BatchNorm2d(1), nn.ReLU())
         self.v_fc1 = nn.Linear(9 * 9, 64)
         self.v_fc2 = nn.Linear(64, 1)
+        # d_-prefix: lets 2-head checkpoints load via strict=False (these params
+        # land in `missing`, never `unexpected`).
         self.d_conv = nn.Sequential(nn.Conv2d(channels, 1, 1),
                                     nn.BatchNorm2d(1), nn.ReLU())
         self.d_fc1 = nn.Linear(9 * 9, 64)
