@@ -42,3 +42,15 @@ def test_train_step_reduces_loss():
     for _ in range(15):
         last = train_step_dense(net, opt, batch, beta=1.0)
     assert last < first
+
+
+def test_train_minibatched_reduces_loss_over_multiple_minibatches():
+    from agents.az.train import train_minibatched
+    net = QuoridorNet(16, 2)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-2)
+    # 120 examples, batch_size=32 -> 4 minibatches/epoch (n > batch_size).
+    ex = [_ex(1.0, 6, 5.0), _ex(-1.0, 8, -4.0), _ex(0.0, 12, 1.0)] * 40
+    batch = form_dense_targets(ex, lam=0.5, device="cpu")
+    first = train_minibatched(net, opt, batch, epochs=1, batch_size=32, device="cpu")
+    last = train_minibatched(net, opt, batch, epochs=6, batch_size=32, device="cpu")
+    assert last < first

@@ -92,3 +92,27 @@ def train_step_dense(net, optimizer, batch, beta=1.0):
     loss.backward()
     optimizer.step()
     return float(loss.item())
+
+
+def train_minibatched(net, optimizer, batch, epochs=4, batch_size=2048, beta=1.0,
+                      device="cpu", seed=0):
+    """Minibatched SGD over a full (planes, pi, v_target, dist_target) batch.
+
+    The full batch is kept where `form_dense_targets` built it (pass device="cpu"
+    so a whole iteration's examples don't all sit in GPU memory); each minibatch is
+    moved to `device` for the forward/backward. This bounds activation memory to
+    `batch_size` rows — full-batch training on a 1000-game iteration (~80k rows)
+    would OOM the GPU. Returns the mean per-minibatch loss over all steps.
+    """
+    planes, pi, v_t, d_t = batch
+    n = planes.shape[0]
+    g = torch.Generator().manual_seed(seed)
+    losses = []
+    for _ in range(epochs):
+        perm = torch.randperm(n, generator=g)
+        for i in range(0, n, batch_size):
+            idx = perm[i:i + batch_size]
+            mb = (planes[idx].to(device), pi[idx].to(device),
+                  v_t[idx].to(device), d_t[idx].to(device))
+            losses.append(train_step_dense(net, optimizer, mb, beta=beta))
+    return sum(losses) / max(1, len(losses))
