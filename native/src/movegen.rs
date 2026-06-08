@@ -52,15 +52,83 @@ fn with_wall(s: &GameState, c: i32, r: i32, orient: u8) -> GameState {
     g
 }
 
+#[inline]
+fn post_idx(px: i32, py: i32) -> u32 {
+    (px * 10 + py) as u32
+}
+
+/// Bitset (u128, 100 posts) of all contact posts occupied by existing walls.
+fn occupied_posts(s: &GameState) -> u128 {
+    let mut bits = 0u128;
+    let mut hm = s.h_mask;
+    while hm != 0 {
+        let i = hm.trailing_zeros() as i32;
+        hm &= hm - 1;
+        let (c, r) = (i % 8, i / 8);
+        for px in [c, c + 1, c + 2] {
+            bits |= 1u128 << post_idx(px, r + 1);
+        }
+    }
+    let mut vm = s.v_mask;
+    while vm != 0 {
+        let i = vm.trailing_zeros() as i32;
+        vm &= vm - 1;
+        let (c, r) = (i % 8, i / 8);
+        for py in [r, r + 1, r + 2] {
+            bits |= 1u128 << post_idx(c + 1, py);
+        }
+    }
+    bits
+}
+
+#[inline]
+fn is_boundary_post(px: i32, py: i32) -> bool {
+    px == 0 || px == 9 || py == 0 || py == 9
+}
+
+/// The three contact posts of a candidate wall (orient 0=H, 1=V).
+fn wall_posts(c: i32, r: i32, orient: u8) -> [(i32, i32); 3] {
+    if orient == 0 {
+        [(c, r + 1), (c + 1, r + 1), (c + 2, r + 1)]
+    } else {
+        [(c + 1, r), (c + 1, r + 1), (c + 1, r + 2)]
+    }
+}
+
+/// True if this candidate could possibly complete a cut (needs the path BFS).
+/// Conservative: returns false (skip BFS) only when <2 of the 3 posts are anchored
+/// (boundary or coincident with an existing wall's post) — provably always-legal
+/// for a length-2 wall.
+fn needs_path_check(occupied: u128, c: i32, r: i32, orient: u8) -> bool {
+    let mut anchored = 0;
+    for (px, py) in wall_posts(c, r, orient) {
+        if is_boundary_post(px, py) || (occupied >> post_idx(px, py)) & 1 != 0 {
+            anchored += 1;
+        }
+    }
+    anchored >= 2
+}
+
 pub fn legal_walls(s: &GameState) -> Vec<(i32, i32, u8)> {
-    if s.walls_left[s.turn as usize] == 0 { return Vec::new(); }
+    if s.walls_left[s.turn as usize] == 0 {
+        return Vec::new();
+    }
+    let occupied = occupied_posts(s);
     let mut res = Vec::new();
     for orient in [0u8, 1u8] {
         for c in 0..8 {
             for r in 0..8 {
-                if overlaps(s, c, r, orient) { continue; }
-                let s2 = with_wall(s, c, r, orient);
-                if path_exists(&s2, 0) && path_exists(&s2, 1) { res.push((c, r, orient)); }
+                if overlaps(s, c, r, orient) {
+                    continue;
+                }
+                if needs_path_check(occupied, c, r, orient) {
+                    let s2 = with_wall(s, c, r, orient);
+                    if path_exists(&s2, 0) && path_exists(&s2, 1) {
+                        res.push((c, r, orient));
+                    }
+                } else {
+                    res.push((c, r, orient)); // <2 anchored posts -> always legal
+                }
             }
         }
     }

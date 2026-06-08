@@ -49,3 +49,31 @@ def test_differential_over_random_games():
             checked += 1
             s = rules.apply_move(s, mv)
     assert checked > 2000
+
+
+def test_legal_walls_match_in_wall_dense_positions():
+    # The fast-path for wall legality must match the Python full-BFS reference
+    # exactly, ESPECIALLY where walls are dense and blocking is actually possible.
+    # Bias the random playout toward wall moves so positions accumulate walls.
+    import random
+    from core.state import Step, Wall
+    rng = random.Random(99)
+    checked = 0
+    dense = 0
+    for _ in range(120):
+        s = initial_state()
+        for _ in range(60):
+            if rules.is_terminal(s):
+                break
+            ns = to_native(s)
+            assert set(bn.legal_moves(ns)) == {mv_to_tuple(m) for m in rules.legal_moves(s)}
+            placed = len(s.h_walls) + len(s.v_walls)
+            if placed >= 6:
+                dense += 1
+            checked += 1
+            moves = rules.legal_moves(s)
+            walls = [m for m in moves if isinstance(m, Wall)]
+            pick = rng.choice(walls) if (walls and rng.random() < 0.75) else rng.choice(moves)
+            s = rules.apply_move(s, pick)
+    assert checked > 2000
+    assert dense > 300
