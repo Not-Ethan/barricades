@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod bitboard;
 mod coords;
+mod encoding;
 mod movegen;
 mod pyiface;
 mod state;

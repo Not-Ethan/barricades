@@ -2,8 +2,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use crate::bitboard::bfs_dist;
+use crate::encoding::{action_to_move, encode_planes, move_to_action};
 use crate::movegen::{is_blocked, legal_moves};
 use crate::state::{apply_move, is_terminal, winner, GameState, Move};
+use numpy::{IntoPyArray, PyArray3};
 
 pub fn parse_state(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
     let pawns: ((i32, i32), (i32, i32)) = state.get_item(0)?.extract()?;
@@ -81,6 +83,28 @@ fn winner_py(state: &Bound<'_, PyAny>) -> PyResult<Option<usize>> { Ok(winner(&p
 #[pyo3(name = "is_terminal")]
 fn is_terminal_py(state: &Bound<'_, PyAny>) -> PyResult<bool> { Ok(is_terminal(&parse_state(state)?)) }
 
+#[pyfunction]
+#[pyo3(name = "encode_planes")]
+fn encode_planes_py<'py>(py: Python<'py>, state: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyArray3<f32>>> {
+    let g = parse_state(state)?;
+    let mut buf = vec![0f32; 6 * 81];
+    encode_planes(&g, &mut buf);
+    let arr = numpy::ndarray::Array3::from_shape_vec((6, 9, 9), buf).expect("shape 6x9x9");
+    Ok(arr.into_pyarray(py))
+}
+
+#[pyfunction]
+#[pyo3(name = "move_to_action")]
+fn move_to_action_py(mv: &Bound<'_, PyAny>, state: &Bound<'_, PyAny>) -> PyResult<usize> {
+    Ok(move_to_action(&parse_move(mv)?, &parse_state(state)?))
+}
+
+#[pyfunction]
+#[pyo3(name = "action_to_move")]
+fn action_to_move_py(idx: usize, state: &Bound<'_, PyAny>) -> PyResult<Move> {
+    Ok(action_to_move(idx, &parse_state(state)?))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(legal_moves_py, m)?)?;
     m.add_function(wrap_pyfunction!(shortest_path_len_py, m)?)?;
@@ -88,5 +112,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_move_py, m)?)?;
     m.add_function(wrap_pyfunction!(winner_py, m)?)?;
     m.add_function(wrap_pyfunction!(is_terminal_py, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_planes_py, m)?)?;
+    m.add_function(wrap_pyfunction!(move_to_action_py, m)?)?;
+    m.add_function(wrap_pyfunction!(action_to_move_py, m)?)?;
     Ok(())
 }
