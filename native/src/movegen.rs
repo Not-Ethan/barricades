@@ -6,6 +6,7 @@ pub fn is_blocked(s: &GameState, a: (i32, i32), b: (i32, i32)) -> bool {
     let (ax, ay) = a;
     let (bx, by) = b;
     let (dx, dy) = (bx - ax, by - ay);
+    debug_assert!(dx.abs() + dy.abs() == 1, "is_blocked: cells must be orthogonally adjacent");
     if dy == 1 { return s.has_h(ax, ay) || s.has_h(ax - 1, ay); }
     if dy == -1 { return s.has_h(ax, by) || s.has_h(ax - 1, by); }
     if dx == 1 { return s.has_v(ax, ay) || s.has_v(ax, ay - 1); }

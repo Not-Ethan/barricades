@@ -26,6 +26,7 @@ impl GameState {
     }
 }
 
+#[allow(dead_code)]
 pub fn initial_state() -> GameState {
     GameState { pawns: [(4, 0), (4, 8)], h_mask: 0, v_mask: 0, walls_left: [10, 10], turn: 0 }
 }

@@ -14,3 +14,6 @@ numpy = "0.28"
 rayon = "1"
 rand = "0.10"
 rand_distr = "0.6"
+
+[profile.release]
+overflow-checks = true
