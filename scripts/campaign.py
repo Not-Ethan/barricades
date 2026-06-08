@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from agents.az.model import QuoridorNet
-from agents.az.train import form_dense_targets, train_minibatched, save_checkpoint
+from agents.az.train import form_dense_targets, train_minibatched, save_checkpoint, augment_lr
 from scripts.selfplay_native import run_selfplay
 
 
@@ -94,7 +94,7 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
                                     max_plies=max_plies)
         # Build targets on CPU (a whole iteration's examples won't fit in GPU mem);
         # train_minibatched moves minibatches to `device`.
-        batch = form_dense_targets(examples, lam=lam, device="cpu")
+        batch = form_dense_targets(augment_lr(examples), lam=lam, device="cpu")
         loss = train_minibatched(net, opt, batch, epochs=epochs, device=device)
         wr = winrate_vs(net, device, opponent=eval_opponent, games=eval_games)
         rec = dict(it=it, lam=round(lam, 3), loss=round(loss, 4),

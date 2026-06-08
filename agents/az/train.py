@@ -116,3 +116,44 @@ def train_minibatched(net, optimizer, batch, epochs=4, batch_size=2048, beta=1.0
                   v_t[idx].to(device), d_t[idx].to(device))
             losses.append(train_step_dense(net, optimizer, mb, beta=beta))
     return sum(losses) / max(1, len(losses))
+
+
+def _build_lr_perm():
+    """Fixed length-140 L-R action permutation. Steps: dx->-dx. Walls: cc->7-cc."""
+    perm = np.empty(140, dtype=np.int64)
+    step_map = {0: 0, 1: 1, 2: 3, 3: 2, 4: 4, 5: 5, 6: 7, 7: 6, 8: 9, 9: 8, 10: 11, 11: 10}
+    for i in range(12):
+        perm[i] = step_map[i]
+    for off in (12, 76):                 # 12..75 = H walls, 76..139 = V walls
+        for cr in range(8):
+            for cc in range(8):
+                perm[off + cr * 8 + cc] = off + cr * 8 + (7 - cc)
+    return perm
+
+
+LR_PERM = _build_lr_perm()
+
+
+def mirror_planes(planes):
+    """Left-right mirror of the (6,9,9) [plane,row,col] encoding. Pawn planes flip
+    cols 0..8 (c->8-c); wall planes flip only cols 0..7 (anchors; cc->7-cc, col 8
+    stays 0); walls-left planes (constant) are unchanged."""
+    m = np.array(planes, dtype=np.float32)          # copy
+    m[0] = planes[0][:, ::-1]                        # me pawn
+    m[1] = planes[1][:, ::-1]                        # opp pawn
+    m[2] = 0.0; m[2][:, 0:8] = planes[2][:, 0:8][:, ::-1]   # H walls (cols 0..7)
+    m[3] = 0.0; m[3][:, 0:8] = planes[3][:, 0:8][:, ::-1]   # V walls (cols 0..7)
+    m[4] = planes[4]                                 # walls_left (constant plane)
+    m[5] = planes[5]
+    return m
+
+
+def augment_lr(examples):
+    """Return examples + their L-R mirrors (planes mirrored, pi permuted, z/feats
+    unchanged). Doubles training data via the board's left-right symmetry."""
+    out = list(examples)
+    for planes, pi, z, feats in examples:
+        out.append((mirror_planes(planes),
+                    np.asarray(pi, dtype=np.float32)[LR_PERM],
+                    z, feats))
+    return out
