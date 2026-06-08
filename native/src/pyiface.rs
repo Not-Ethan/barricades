@@ -6,8 +6,9 @@ use crate::bitboard::bfs_dist;
 use crate::encoding::{action_to_move, encode_planes, move_to_action};
 use crate::mcts::{Leaf, Tree as CoreTree};
 use crate::movegen::{is_blocked, legal_moves};
+use crate::selfplay::{Config, SelfPlayPool as CorePool};
 use crate::state::{apply_move, is_terminal, winner, GameState, Move};
-use numpy::{IntoPyArray, PyArray3, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2};
 
 pub fn parse_state(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
     let pawns: ((i32, i32), (i32, i32)) = state.get_item(0)?.extract()?;
@@ -150,6 +151,59 @@ impl Tree {
     }
 }
 
+#[pyclass]
+pub struct SelfPlayPool {
+    inner: CorePool,
+}
+
+#[pymethods]
+impl SelfPlayPool {
+    #[new]
+    #[pyo3(signature = (n_games, total_games, sims, c_puct=1.5, seed=0,
+                        dirichlet_alpha=0.5, dirichlet_eps=0.25,
+                        temp_moves=10, max_plies=200))]
+    fn new(n_games: u32, total_games: u32, sims: u32, c_puct: f64, seed: u64,
+           dirichlet_alpha: f64, dirichlet_eps: f64, temp_moves: u32, max_plies: u32) -> SelfPlayPool {
+        let cfg = Config { sims, c_puct, dirichlet_alpha, dirichlet_eps, temp_moves, max_plies };
+        SelfPlayPool { inner: CorePool::new(n_games, total_games, cfg, seed) }
+    }
+
+    fn step<'py>(&mut self, py: Python<'py>) -> Option<Bound<'py, PyArray4<f32>>> {
+        let (buf, m) = py.detach(|| self.inner.step());
+        if m == 0 {
+            return None;
+        }
+        let arr = numpy::ndarray::Array4::from_shape_vec((m, 6, 9, 9), buf).unwrap();
+        Some(arr.into_pyarray(py))
+    }
+
+    fn feed(&mut self, policy: PyReadonlyArray2<f32>, value: PyReadonlyArray1<f32>) -> PyResult<()> {
+        let pol = policy.as_slice()?;
+        let val = value.as_slice()?;
+        self.inner.feed(pol, val);
+        Ok(())
+    }
+
+    fn drain<'py>(&mut self, py: Python<'py>) -> PyResult<Vec<Py<PyAny>>> {
+        let mut out = Vec::new();
+        for ex in self.inner.drain() {
+            let planes = numpy::ndarray::Array3::from_shape_vec((6, 9, 9), ex.planes).unwrap().into_pyarray(py);
+            let pi = numpy::ndarray::Array1::from_vec(ex.pi).into_pyarray(py);
+            let feats = numpy::ndarray::Array1::from_vec(ex.feats.to_vec()).into_pyarray(py);
+            out.push((planes, pi, ex.z, feats).into_pyobject(py)?.into_any().unbind());
+        }
+        Ok(out)
+    }
+
+    fn games_remaining(&self) -> u32 {
+        self.inner.games_remaining()
+    }
+
+    fn active(&self) -> usize {
+        self.inner.active()
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(legal_moves_py, m)?)?;
     m.add_function(wrap_pyfunction!(shortest_path_len_py, m)?)?;
@@ -161,5 +215,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_to_action_py, m)?)?;
     m.add_function(wrap_pyfunction!(action_to_move_py, m)?)?;
     m.add_class::<Tree>()?;
+    m.add_class::<SelfPlayPool>()?;
     Ok(())
 }

@@ -6,6 +6,7 @@ mod encoding;
 mod mcts;
 mod movegen;
 mod pyiface;
+mod selfplay;
 mod state;
 
 #[pymodule]
