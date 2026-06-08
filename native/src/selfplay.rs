@@ -49,6 +49,7 @@ pub struct Config {
     pub dirichlet_eps: f64,
     pub temp_moves: u32,
     pub max_plies: u32,
+    pub carryover: bool,
 }
 
 pub struct SelfPlayPool {
@@ -136,8 +137,20 @@ impl SelfPlayPool {
         if is_terminal(&next) || slot.ply >= cfg.max_plies {
             return false;
         }
-        slot.tree = Tree::new(next, cfg.c_puct, seed);
-        slot.sims_done = 0;
+        if cfg.carryover {
+            slot.tree.advance(mv);
+            slot.sims_done = slot.tree.root_visits().min(cfg.sims);
+            // Root is already expanded under carryover, so the feed-time
+            // "sims_done==0" noise trigger won't fire -> apply noise now.
+            // apply_root_noise is a no-op on an unexpanded root (then the feed
+            // trigger handles it) and idempotent.
+            if cfg.dirichlet_alpha > 0.0 && slot.tree.root_expanded() {
+                slot.tree.apply_root_noise(cfg.dirichlet_alpha, cfg.dirichlet_eps);
+            }
+        } else {
+            slot.tree = Tree::new(next, cfg.c_puct, seed);
+            slot.sims_done = 0;
+        }
         slot.phase = Phase::AwaitingEval;
         true
     }

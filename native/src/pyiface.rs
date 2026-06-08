@@ -167,6 +167,15 @@ impl Tree {
         let (mv, pi) = self.inner.best_move(temp).ok_or_else(|| PyValueError::new_err("best_move: root has no children (terminal or unsearched?)"))?;
         Ok((mv, pi.to_vec()))
     }
+
+    fn advance(&mut self, mv: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.inner.advance(parse_move(mv)?);
+        Ok(())
+    }
+
+    fn root_visits(&self) -> u32 {
+        self.inner.root_visits()
+    }
 }
 
 #[pyclass]
@@ -179,10 +188,12 @@ impl SelfPlayPool {
     #[new]
     #[pyo3(signature = (n_games, total_games, sims, c_puct=1.5, seed=0,
                         dirichlet_alpha=0.5, dirichlet_eps=0.25,
-                        temp_moves=10, max_plies=200))]
+                        temp_moves=10, max_plies=200, carryover=true))]
     fn new(n_games: u32, total_games: u32, sims: u32, c_puct: f64, seed: u64,
-           dirichlet_alpha: f64, dirichlet_eps: f64, temp_moves: u32, max_plies: u32) -> SelfPlayPool {
-        let cfg = Config { sims, c_puct, dirichlet_alpha, dirichlet_eps, temp_moves, max_plies };
+           dirichlet_alpha: f64, dirichlet_eps: f64, temp_moves: u32, max_plies: u32,
+           carryover: bool) -> SelfPlayPool {
+        let cfg = Config { sims, c_puct, dirichlet_alpha, dirichlet_eps,
+                           temp_moves, max_plies, carryover };
         SelfPlayPool { inner: CorePool::new(n_games, total_games, cfg, seed) }
     }
 

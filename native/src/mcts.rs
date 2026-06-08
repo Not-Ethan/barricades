@@ -243,4 +243,79 @@ impl Tree {
         };
         Some((self.nodes[chosen as usize].mv.unwrap(), pi))
     }
+
+    pub fn root_visits(&self) -> u32 {
+        self.nodes[self.root as usize].n
+    }
+
+    pub fn root_expanded(&self) -> bool {
+        self.nodes[self.root as usize].expanded
+    }
+
+    /// Re-root the tree to the chosen move's child, keeping that subtree (visits,
+    /// priors, expansion) and NEGATING every retained node's `w` (root-player
+    /// perspective flips by one ply). Compacts the arena to the retained subtree.
+    /// If `mv` isn't an expanded child, starts a fresh single-node root.
+    pub fn advance(&mut self, mv: Move) {
+        let root = self.root as usize;
+        let chosen = self.nodes[root]
+            .children
+            .iter()
+            .cloned()
+            .find(|&c| self.nodes[c as usize].mv == Some(mv));
+        let chosen = match chosen {
+            Some(c) => c as usize,
+            None => {
+                let st = apply_move(&self.nodes[root].state, &mv);
+                self.nodes = vec![Node {
+                    state: st, parent: -1, mv: None, prior: 0.0,
+                    children: Vec::new(), n: 0, w: 0.0, expanded: false,
+                }];
+                self.root = 0;
+                self.root_player = st.turn as usize;
+                self.parked = None;
+                self.noised = false;
+                return;
+            }
+        };
+        // BFS the retained subtree; assign new indices; negate w.
+        let mut remap = vec![u32::MAX; self.nodes.len()];
+        let mut order: Vec<usize> = Vec::new();
+        let mut new_nodes: Vec<Node> = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(chosen);
+        while let Some(old) = queue.pop_front() {
+            remap[old] = new_nodes.len() as u32;
+            order.push(old);
+            let on = &self.nodes[old];
+            new_nodes.push(Node {
+                state: on.state,
+                parent: -1, // fixed below
+                mv: on.mv,
+                prior: on.prior,
+                children: Vec::new(), // fixed below
+                n: on.n,
+                w: -on.w, // perspective flip
+                expanded: on.expanded,
+            });
+            for &c in &self.nodes[old].children {
+                queue.push_back(c as usize);
+            }
+        }
+        for (new_i, &old) in order.iter().enumerate() {
+            new_nodes[new_i].children =
+                self.nodes[old].children.iter().map(|&c| remap[c as usize]).collect();
+            new_nodes[new_i].parent = if old == chosen {
+                -1
+            } else {
+                let op = self.nodes[old].parent;
+                if op >= 0 { remap[op as usize] as i32 } else { -1 }
+            };
+        }
+        self.nodes = new_nodes;
+        self.root = 0;
+        self.root_player = self.nodes[0].state.turn as usize;
+        self.parked = None;
+        self.noised = false;
+    }
 }
