@@ -55,3 +55,39 @@ def test_driver_drains_all_examples_no_loss():
     ex1, _ = run_selfplay(total_games=1, n_games=1, sims=8, device="cpu",
                           max_plies=12)
     assert len(ex1) == 12
+
+
+def test_feed_length_mismatch_raises():
+    import numpy as np
+    import pytest
+    pool = bn.SelfPlayPool(n_games=4, total_games=4, sims=8, seed=0)
+    planes = None
+    while planes is None:
+        planes = pool.step()
+    m = np.asarray(planes).shape[0]
+    # wrong policy row count -> clean ValueError, not a panic
+    with pytest.raises(ValueError):
+        pool.feed(np.full((m + 1, 140), 1.0 / 140, np.float32), np.zeros(m, np.float32))
+
+
+def test_capped_games_are_draws_with_plies_to_end():
+    import numpy as np
+    # max_plies=12 is below the ~15-ply minimum to reach a goal, so every game
+    # caps -> winner None -> all z==0, and feats[3] (plies_to_end) in [1, 12].
+    pool = bn.SelfPlayPool(n_games=4, total_games=4, sims=8, seed=0,
+                           max_plies=12, temp_moves=4)
+    examples = []
+    guard = 0
+    while pool.games_remaining() > 0 and guard < 200_000:
+        guard += 1
+        planes = pool.step()
+        if planes is not None:
+            b = np.asarray(planes).shape[0]
+            pool.feed(np.full((b, 140), 1.0 / 140, np.float32), np.zeros(b, np.float32))
+        examples.extend(pool.drain())
+    examples.extend(pool.drain())
+    assert len(examples) == 4 * 12
+    for _planes, _pi, z, feats in examples:
+        assert z == 0.0
+        p = float(np.asarray(feats)[3])
+        assert 1.0 <= p <= 12.0

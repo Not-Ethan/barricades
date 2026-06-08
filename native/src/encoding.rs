@@ -1,6 +1,5 @@
 use crate::state::{GameState, Move};
 
-#[allow(dead_code)]
 pub const N_ACTIONS: usize = 140;
 
 const DIRS12: [(i32, i32); 12] = [

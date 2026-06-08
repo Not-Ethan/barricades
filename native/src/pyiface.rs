@@ -99,12 +99,24 @@ fn encode_planes_py<'py>(py: Python<'py>, state: &Bound<'py, PyAny>) -> PyResult
 #[pyfunction]
 #[pyo3(name = "move_to_action")]
 fn move_to_action_py(mv: &Bound<'_, PyAny>, state: &Bound<'_, PyAny>) -> PyResult<usize> {
-    Ok(move_to_action(&parse_move(mv)?, &parse_state(state)?))
+    let st = parse_state(state)?;
+    let m = parse_move(mv)?;
+    if !legal_moves(&st).contains(&m) {
+        return Err(PyValueError::new_err(
+            "move_to_action: move is not legal for the given state",
+        ));
+    }
+    Ok(move_to_action(&m, &st))
 }
 
 #[pyfunction]
 #[pyo3(name = "action_to_move")]
 fn action_to_move_py(idx: usize, state: &Bound<'_, PyAny>) -> PyResult<Move> {
+    if idx >= 140 {
+        return Err(PyValueError::new_err(format!(
+            "action_to_move: idx {} out of range [0,140)", idx
+        )));
+    }
     Ok(action_to_move(idx, &parse_state(state)?))
 }
 
@@ -132,7 +144,13 @@ impl Tree {
     }
 
     fn receive(&mut self, policy: PyReadonlyArray1<f32>, value: f64) -> PyResult<()> {
-        self.inner.receive(policy.as_slice()?, value);
+        let pol = policy.as_slice()?;
+        if pol.len() != 140 {
+            return Err(PyValueError::new_err(format!(
+                "receive: expected policy of length 140, got {}", pol.len()
+            )));
+        }
+        self.inner.receive(pol, value);
         Ok(())
     }
 

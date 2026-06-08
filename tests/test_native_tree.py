@@ -63,3 +63,23 @@ def test_native_agent_beats_random():
     # clearly but not overwhelmingly; the net-driven path is where real
     # strength comes from. Bar has margin to absorb RNG-order shifts.
     assert wins >= 14
+
+
+def test_net_path_finds_immediate_win():
+    # Drive the net path (prepare_leaf/receive) with a uniform policy + neutral
+    # value; the winning step (4,8) is terminal so its +1 backup (root-player
+    # perspective) must steer best_move to it — exercising the net machinery and
+    # the W-sign convention end-to-end, not just the heuristic path.
+    import numpy as np
+    s = _state((4, 7), (0, 4))
+    t = bn.Tree(to_native(s), 1.5, 0)
+    evals, guard = 0, 0
+    while evals < 160 and guard < 2000:
+        guard += 1
+        planes = t.prepare_leaf()
+        if planes is None:
+            continue
+        t.receive(np.full(140, 1.0 / 140, dtype=np.float32), 0.0)
+        evals += 1
+    mv, _ = t.best_move(0.0)
+    assert mv == ("step", 4, 8)
