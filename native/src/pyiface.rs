@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -134,8 +135,8 @@ impl Tree {
         Ok(())
     }
 
-    fn run_heuristic(&mut self, sims: u32) -> Move {
-        self.inner.run_heuristic(sims)
+    fn run_heuristic(&mut self, sims: u32) -> PyResult<Move> {
+        self.inner.run_heuristic(sims).ok_or_else(|| PyValueError::new_err("run_heuristic: root has no legal moves (terminal state?)"))
     }
 
     #[pyo3(signature = (alpha, eps=0.25))]
@@ -143,9 +144,9 @@ impl Tree {
         self.inner.apply_root_noise(alpha, eps);
     }
 
-    fn best_move(&mut self, temp: f64) -> (Move, Vec<f32>) {
-        let (mv, pi) = self.inner.best_move(temp);
-        (mv, pi.to_vec())
+    fn best_move(&mut self, temp: f64) -> PyResult<(Move, Vec<f32>)> {
+        let (mv, pi) = self.inner.best_move(temp).ok_or_else(|| PyValueError::new_err("best_move: root has no children (terminal or unsearched?)"))?;
+        Ok((mv, pi.to_vec()))
     }
 }
 

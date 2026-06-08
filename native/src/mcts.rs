@@ -29,7 +29,7 @@ pub struct Tree {
     root: u32,
     root_player: usize,
     c_puct: f64,
-    parked: i32,
+    parked: Option<usize>,
     noised: bool,
     rng: StdRng,
 }
@@ -51,7 +51,7 @@ impl Tree {
             root: 0,
             root_player: state.turn as usize,
             c_puct,
-            parked: -1,
+            parked: None,
             noised: false,
             rng: StdRng::seed_from_u64(seed),
         }
@@ -133,13 +133,12 @@ impl Tree {
             return Leaf::Terminal;
         }
         crate::encoding::encode_planes(&self.nodes[node].state, planes_out);
-        self.parked = node as i32;
+        self.parked = Some(node);
         Leaf::Parked
     }
 
     pub fn receive(&mut self, policy: &[f32], value: f64) {
-        let node = self.parked as usize;
-        self.parked = -1;
+        let node = self.parked.take().expect("receive() called without a preceding parked leaf");
         self.expand_with_policy(node, policy, value);
     }
 
@@ -152,7 +151,7 @@ impl Tree {
         ((d_opp - d_self) / HEUR_SCALE).tanh()
     }
 
-    pub fn run_heuristic(&mut self, sims: u32) -> Move {
+    pub fn run_heuristic(&mut self, sims: u32) -> Option<Move> {
         let uniform = vec![1.0f32 / N_ACTIONS as f32; N_ACTIONS];
         let mut evals = 0u32;
         let mut guard = 0u32;
@@ -173,7 +172,7 @@ impl Tree {
             self.expand_with_policy(node, &uniform, val);
             evals += 1;
         }
-        self.best_move(0.0).0
+        self.best_move(0.0).map(|(mv, _)| mv)
     }
 
     pub fn apply_root_noise(&mut self, alpha: f64, eps: f64) {
@@ -185,7 +184,10 @@ impl Tree {
         if kids.is_empty() {
             return;
         }
-        let gamma = Gamma::new(alpha, 1.0).unwrap();
+        let gamma = match Gamma::new(alpha, 1.0) {
+            Ok(g) => g,
+            Err(_) => return, // invalid alpha (<=0, NaN): noise is optional, no-op
+        };
         let mut g: Vec<f64> = (0..kids.len()).map(|_| gamma.sample(&mut self.rng)).collect();
         let tot: f64 = g.iter().sum::<f64>().max(1e-12);
         for x in g.iter_mut() {
@@ -198,8 +200,11 @@ impl Tree {
         self.noised = true;
     }
 
-    pub fn best_move(&mut self, temp: f64) -> (Move, [f32; N_ACTIONS]) {
+    pub fn best_move(&mut self, temp: f64) -> Option<(Move, [f32; N_ACTIONS])> {
         let kids = self.nodes[self.root as usize].children.clone();
+        if kids.is_empty() {
+            return None;
+        }
         let root_state = self.nodes[self.root as usize].state;
         let mut pi = [0f32; N_ACTIONS];
         let total: u32 = kids.iter().map(|&c| self.nodes[c as usize].n).sum();
@@ -207,6 +212,12 @@ impl Tree {
             for &c in &kids {
                 let a = move_to_action(self.nodes[c as usize].mv.as_ref().unwrap(), &root_state);
                 pi[a] = self.nodes[c as usize].n as f32 / total as f32;
+            }
+        } else {
+            let u = 1.0 / kids.len() as f32;
+            for &c in &kids {
+                let a = move_to_action(self.nodes[c as usize].mv.as_ref().unwrap(), &root_state);
+                pi[a] = u;
             }
         }
         let chosen = if temp == 0.0 {
@@ -230,6 +241,6 @@ impl Tree {
             }
             pick
         };
-        (self.nodes[chosen as usize].mv.unwrap(), pi)
+        Some((self.nodes[chosen as usize].mv.unwrap(), pi))
     }
 }
