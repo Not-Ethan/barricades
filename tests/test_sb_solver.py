@@ -59,3 +59,37 @@ def test_solver_no_walls_is_pure_race_3x3():
     s = e.initial_state()
     val, best = Solver(e, max_depth=14).solve(s)
     assert val in (-1, 0, 1)
+
+
+def test_solver_exact_value_and_move_set_with_reused_instance():
+    # Regression: the solver must be exact in BOTH value and optimal-move set even
+    # when the SAME Solver instance (and its TT) is reused across many positions
+    # (how validate.py uses it). This guards the alpha-beta + transposition-table
+    # bound-flag handling.
+    import random
+    e = Engine(3, 1)
+    sol = Solver(e, max_depth=14)          # ONE reused instance
+    rng = random.Random(99)
+    checked = vmis = setmis = 0
+    for _ in range(120):
+        s = e.initial_state()
+        for _ in range(10):
+            if e.is_terminal(s):
+                break
+            val, best = sol.solve(s)
+            if val != _brute(e, s, 14, {}):
+                vmis += 1
+            bv = -2
+            for m in e.legal_moves(s):
+                v = -_brute(e, e.apply_move(s, m), 13, {})
+                if v > bv:
+                    bv = v
+            true_best = {m for m in e.legal_moves(s)
+                         if -_brute(e, e.apply_move(s, m), 13, {}) == bv}
+            if set(best) != true_best:
+                setmis += 1
+            checked += 1
+            ms = e.legal_moves(s)
+            s = e.apply_move(s, ms[rng.randrange(len(ms))])
+    assert checked > 300
+    assert vmis == 0 and setmis == 0, f"value_mismatches={vmis} set_mismatches={setmis}"

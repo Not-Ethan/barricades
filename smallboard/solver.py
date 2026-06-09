@@ -36,10 +36,19 @@ class Solver:
             return 1 if w == s.turn else -1
         if depth == 0:
             return 0
+        alpha0 = alpha
         key = (s, depth)
-        cached = self._tt.get(key)
-        if cached is not None:
-            return cached
+        entry = self._tt.get(key)
+        if entry is not None:
+            val, flag = entry            # flag: 0=EXACT, 1=LOWER bound, 2=UPPER bound
+            if flag == 0:
+                return val
+            if flag == 1 and val > alpha:
+                alpha = val
+            elif flag == 2 and val < beta:
+                beta = val
+            if alpha >= beta:
+                return val
         best = -2
         for m in self._ordered_moves(s):
             v = -self._negamax(self.e.apply_move(s, m), depth - 1, -beta, -alpha)
@@ -51,7 +60,8 @@ class Solver:
                 break
         if best == -2:
             best = -1
-        self._tt[key] = best
+        flag = 2 if best <= alpha0 else (1 if best >= beta else 0)
+        self._tt[key] = (best, flag)
         return best
 
     def solve(self, s):
