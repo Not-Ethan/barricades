@@ -1,6 +1,13 @@
+import os
 import random
+import sys
+
 import numpy as np
 import torch
+
+# Allow `python smallboard/validate.py ...` (not just `python -m smallboard.validate`)
+# by putting the repo root on sys.path, mirroring scripts/campaign.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from smallboard.engine import Engine
 from smallboard.encoding import Encoder
