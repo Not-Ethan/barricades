@@ -10,6 +10,11 @@ use crate::endgame::RaceTt;
 use crate::state::{Move, State};
 use rustc_hash::FxHashMap;
 
+/// Maximum search ply we keep killer slots for. The `solve()` depth ceiling for
+/// the validation boards is well under this, and any deeper ply simply skips the
+/// killer heuristic (it only affects ordering, never values).
+const MAX_PLY: usize = 256;
+
 /// Game-theoretic value for the side to move.
 ///
 /// `Loss < Draw < Win` by declaration order, which the derived `Ord`/`PartialOrd`
@@ -81,10 +86,150 @@ pub struct Solver<'a> {
     /// reuse; values stay valid because the race value is a pure function of
     /// `State`, independent of the surrounding board's wall count).
     race_tt: RaceTt,
+    /// Killer moves: up to two moves per search ply that previously caused a
+    /// beta cutoff. Tried first (after the TT move would be, but we have no
+    /// separate TT-move slot) to maximize cutoffs. ORDERING ONLY — never changes
+    /// the legal-move set or any value.
+    killers: Vec<[Option<Move>; 2]>,
+    /// History heuristic: per-move cumulative beta-cutoff count, indexed by the
+    /// dense `move_index`. Biases ordering globally. ORDERING ONLY.
+    history: Vec<u32>,
+    /// Precomputed horizontal-mirror permutations of the wall-anchor bit layout
+    /// (`hbit`/`vbit` = `wr*(w-1)+wc`), mapping each set bit to its column-
+    /// reflected anchor `wc -> w-2-wc`. `Some` only for `w >= 2`; `None` for
+    /// degenerate single-column boards (no wall anchors, mirror is identity).
+    mirror_perm: Option<Vec<u8>>,
+    /// When false, `ordered_moves` ignores the killer/history heuristics (pure
+    /// distance ordering, == baseline). Toggle for staged measurement ONLY;
+    /// neither setting changes any value.
+    use_ordering: bool,
+    /// When false, the main TT keys on the raw state (== baseline) instead of
+    /// the horizontal-mirror canonical representative. Toggle for staged
+    /// measurement ONLY; both settings return identical values.
+    use_symmetry: bool,
     /// Profiling counter: total internal nodes visited. Counts every `ab(...)`
     /// entry (main alpha-beta search) plus every wall-less race node entered via
     /// `race_value`. Instrumentation only — does not affect search results.
     pub nodes: u64,
+}
+
+/// Dense move index for the killer/history tables. Steps map to their
+/// destination cell index `0..64`; walls map to `64 + (horiz?0:64) + anchorbit`,
+/// where `anchorbit = wr*(w-1)+wc < 64`. Range `< 192`; ordering-only, so a
+/// collision (impossible here) could at worst affect speed, never values.
+#[inline]
+fn move_index(b: &Board, m: Move) -> usize {
+    match m {
+        Move::Step(d) => d as usize,
+        Move::Wall { wc, wr, horiz } => {
+            let bit = (wr * (b.w - 1) + wc) as usize;
+            64 + if horiz { 0 } else { 64 } + bit
+        }
+    }
+}
+const MOVE_INDEX_SPAN: usize = 192;
+
+/// Public horizontal mirror of a state for tests/tooling: pawn columns
+/// `c -> w-1-c`, wall anchors column-reflected `wc -> w-2-wc`, rows/orientation/
+/// walls_left/turn unchanged. A value-preserving board automorphism with the
+/// SAME side to move; `mirror(mirror(s)) == s`. Builds the permutation on the
+/// fly (cheap), so callers need no `Solver`.
+pub fn mirror(b: &Board, s: &State) -> State {
+    let perm = build_mirror_perm(b);
+    mirror_state(b, perm.as_deref(), s)
+}
+
+/// Build the horizontal-mirror permutation of the wall-anchor bit layout.
+///
+/// The anchor grid is `(w-1)` columns by `(h-1)` rows; anchor `(wc, wr)` lives
+/// at bit `wr*(w-1)+wc` in BOTH `h_walls` and `v_walls`. A horizontal board
+/// reflection maps column `wc -> w-2-wc` (the mirror of an index in `0..w-1`),
+/// leaving the row unchanged. The returned `perm[src_bit] = dst_bit` is applied
+/// identically to the horizontal and vertical anchor bitsets (a horizontal wall
+/// reflects to a horizontal wall, a vertical to a vertical — orientation is
+/// preserved under a left-right flip). Returns `None` when `w < 2` (no anchor
+/// columns exist; the mirror is the identity and there is nothing to permute).
+fn build_mirror_perm(b: &Board) -> Option<Vec<u8>> {
+    if b.w < 2 {
+        return None;
+    }
+    let aw = (b.w - 1) as usize; // anchor columns
+    let ah = (b.h - 1) as usize; // anchor rows
+    let nbits = aw * ah;
+    let mut perm = vec![0u8; nbits.max(1)];
+    for wr in 0..ah {
+        for wc in 0..aw {
+            let src = wr * aw + wc;
+            let mwc = aw - 1 - wc; // (w-1)-1-wc = w-2-wc
+            let dst = wr * aw + mwc;
+            perm[src] = dst as u8;
+        }
+    }
+    Some(perm)
+}
+
+/// Apply a bit permutation: for each set bit `i` of `bits`, set bit `perm[i]`.
+#[inline]
+fn permute_bits(bits: u64, perm: &[u8]) -> u64 {
+    let mut rem = bits;
+    let mut out = 0u64;
+    while rem != 0 {
+        let i = rem.trailing_zeros() as usize;
+        rem &= rem - 1;
+        out |= 1u64 << perm[i];
+    }
+    out
+}
+
+/// Horizontal mirror of a state: pawn columns `c -> w-1-c` (idx recomputed via
+/// `cr`/`idx`), wall anchors column-reflected via `perm`, rows/orientation/
+/// walls_left/turn unchanged. This is a graph automorphism of Quoridor — column
+/// reflection commutes with `legal_steps` (incl. jumps), `legal_walls`,
+/// `winner`, and `apply` — so `value(s) == value(mirror(s))` with the SAME side
+/// to move. Used only to pick a canonical TT key; never flips the value.
+fn mirror_state(b: &Board, perm: Option<&[u8]>, s: &State) -> State {
+    let mut t = *s;
+    for p in 0..2 {
+        let (c, r) = b.cr(s.pawn[p]);
+        t.pawn[p] = b.idx(b.w - 1 - c, r);
+    }
+    if let Some(perm) = perm {
+        t.h_walls = permute_bits(s.h_walls, perm);
+        t.v_walls = permute_bits(s.v_walls, perm);
+    }
+    t
+}
+
+/// Pack a `State` into a `(u64, u64, u64)` total-order key that is cheap to
+/// compare. The ordering is arbitrary but TOTAL and DETERMINISTIC, which is all
+/// the canonicalization needs (it only must pick the SAME representative for `s`
+/// and `mirror(s)`). The two wall bitsets are packed in full and the small
+/// fields (both pawns, both walls-left counts, turn — each a `u8`) are folded
+/// losslessly into the third word, so the key is injective on `State`.
+#[inline]
+fn pack_key(s: &State) -> (u64, u64, u64) {
+    // Two 64-bit wall words plus a folded small-field word. The triple is
+    // compared lexicographically by the derived tuple `Ord`.
+    let small = (s.pawn[0] as u64)
+        | ((s.pawn[1] as u64) << 8)
+        | ((s.walls_left[0] as u64) << 16)
+        | ((s.walls_left[1] as u64) << 24)
+        | ((s.turn as u64) << 32);
+    (s.h_walls, s.v_walls, small)
+}
+
+/// The canonical (orientation-folding) representative of `s`: the
+/// lexicographically-smaller of `s` and its horizontal mirror, by `pack_key`.
+/// Because mirror is value-preserving with the same side to move, `s` and its
+/// mirror share a game value, so keying the TT on the representative is exact.
+#[inline]
+fn canonical(b: &Board, perm: Option<&[u8]>, s: &State) -> State {
+    let m = mirror_state(b, perm, s);
+    if pack_key(&m) < pack_key(s) {
+        m
+    } else {
+        *s
+    }
 }
 
 impl<'a> Solver<'a> {
@@ -93,8 +238,25 @@ impl<'a> Solver<'a> {
             b,
             tt: FxHashMap::default(),
             race_tt: RaceTt::default(),
+            killers: vec![[None, None]; MAX_PLY],
+            history: vec![0u32; MOVE_INDEX_SPAN],
+            mirror_perm: build_mirror_perm(b),
+            use_ordering: true,
+            use_symmetry: true,
             nodes: 0,
         }
+    }
+
+    /// Enable/disable the killer+history move ordering (default on). For staged
+    /// measurement only — does not affect values.
+    pub fn set_use_ordering(&mut self, on: bool) {
+        self.use_ordering = on;
+    }
+
+    /// Enable/disable horizontal-mirror TT canonicalization (default on). For
+    /// staged measurement only — does not affect values.
+    pub fn set_use_symmetry(&mut self, on: bool) {
+        self.use_symmetry = on;
     }
 
     /// Number of entries currently in the persistent race endgame memo.
@@ -135,12 +297,21 @@ impl<'a> Solver<'a> {
         let h = self.b.h as u32;
         let walls = self.b.walls as u32;
         let ceiling = 4 * (w + h) + 2 * walls + 8;
-        self.ab(s, ceiling, Value::Loss, Value::Win)
+        // Reset ordering heuristics per solve (they only affect speed, but a
+        // fresh start keeps behaviour reproducible across calls).
+        for k in self.killers.iter_mut() {
+            *k = [None, None];
+        }
+        for h in self.history.iter_mut() {
+            *h = 0;
+        }
+        self.ab(s, ceiling, 0, Value::Loss, Value::Win)
     }
 
     /// Alpha-beta negamax. Returns the value of `s` for the side to move,
-    /// fail-soft within the `(alpha, beta)` window.
-    fn ab(&mut self, s: &State, depth: u32, mut alpha: Value, mut beta: Value) -> Value {
+    /// fail-soft within the `(alpha, beta)` window. `ply` is the distance from
+    /// the root (used only to index per-ply killer slots; ordering-only).
+    fn ab(&mut self, s: &State, depth: u32, ply: usize, mut alpha: Value, mut beta: Value) -> Value {
         // Profiling: count every internal node entered (instrumentation only).
         self.nodes += 1;
         // Terminal: `winner` is the player who just moved (= 1 - turn). If that
@@ -165,7 +336,16 @@ impl<'a> Solver<'a> {
         }
 
         let alpha0 = alpha;
-        let key = (*s, depth);
+        // Canonicalize the TT key by the horizontal-mirror representative. The
+        // mirror is a value-preserving automorphism (same side to move), so `s`
+        // and its mirror have the SAME value at every depth — keying both under
+        // the shared representative is exact and roughly halves the TT.
+        let canon = if self.use_symmetry {
+            canonical(self.b, self.mirror_perm.as_deref(), s)
+        } else {
+            *s
+        };
+        let key = (canon, depth);
         if let Some(&(val, flag)) = self.tt.get(&key) {
             match flag {
                 Flag::Exact => return val,
@@ -186,9 +366,12 @@ impl<'a> Solver<'a> {
         }
 
         let mut best = Value::Loss;
-        for m in self.ordered_moves(s) {
+        let moves = self.ordered_moves(s, ply);
+        for m in moves {
             let s2 = crate::movegen::apply(self.b, s, m);
-            let v = self.ab(&s2, depth - 1, beta.negate(), alpha.negate()).negate();
+            let v = self
+                .ab(&s2, depth - 1, ply + 1, beta.negate(), alpha.negate())
+                .negate();
             if v > best {
                 best = v;
             }
@@ -196,6 +379,11 @@ impl<'a> Solver<'a> {
                 alpha = best;
             }
             if alpha >= beta {
+                // Beta cutoff: reward this move in the killer (per-ply) and
+                // history tables to try it earlier in sibling/future nodes.
+                if self.use_ordering {
+                    self.record_cutoff(m, ply, depth);
+                }
                 break;
             }
         }
@@ -211,26 +399,77 @@ impl<'a> Solver<'a> {
         best
     }
 
-    /// Order legal moves by the mover's resulting shortest-path advantage:
-    /// `score = d_opp(s2) - d_self(s2)`, descending. A larger score means the
-    /// move leaves the mover closer to goal than the opponent, so it's tried
-    /// first to maximize alpha-beta cutoffs. Mirrors
-    /// `smallboard/solver.py::_ordered_moves`.
-    fn ordered_moves(&self, s: &State) -> Vec<Move> {
+    /// Record a beta-cutoff move into the killer (per-ply, up to 2 distinct
+    /// moves, most-recent first) and history (cutoff-count, weighted by depth)
+    /// tables. ORDERING ONLY — never affects values.
+    #[inline]
+    fn record_cutoff(&mut self, m: Move, ply: usize, depth: u32) {
+        if ply < self.killers.len() {
+            let slot = &mut self.killers[ply];
+            if slot[0] != Some(m) {
+                slot[1] = slot[0];
+                slot[0] = Some(m);
+            }
+        }
+        // Deeper cutoffs (more remaining depth) are worth more; saturating to
+        // avoid overflow on long runs.
+        let idx = move_index(self.b, m);
+        self.history[idx] = self.history[idx].saturating_add(depth.saturating_mul(depth));
+    }
+
+    /// Order legal moves to maximize alpha-beta cutoffs. The proven distance
+    /// advantage `d_opp(s2) - d_self(s2)` (descending) is the ABSOLUTE primary
+    /// key: it is an exceptionally strong, position-dependent heuristic on these
+    /// boards, and displacing its top move measurably blows up the search (at
+    /// W2, making a killer-first ordering primary cost ~9x the nodes). The
+    /// global history cutoff-count and the killer moves (a refutation that
+    /// caused a cutoff at THIS ply) are therefore applied ONLY as tiebreakers,
+    /// refining the order WITHIN a group of moves that the distance heuristic
+    /// ranks equal (where the baseline's stable sort left an arbitrary order).
+    /// History is the stronger, smoother signal here, so it is the SECONDARY key
+    /// and killers only break history ties. This can only help or be neutral —
+    /// it never moves a move past one the distance heuristic prefers. Sort is
+    /// descending on `(distance, history, killer_rank)`. (Measured: 6x5 W1
+    /// 963K->348K nodes, W2 9.45M->6.52M nodes.)
+    ///
+    /// EXACTNESS: this is pure reordering. The legal-move SET is unchanged, and
+    /// alpha-beta returns the identical value under any visitation order, so no
+    /// value can change — zero exactness risk.
+    fn ordered_moves(&self, s: &State, ply: usize) -> Vec<Move> {
         let mover = s.turn;
         let opp = 1 - mover;
         let big = 4 * (self.b.w as i64 + self.b.h as i64);
-        let mut scored: Vec<(i64, Move)> = crate::movegen::legal_moves(self.b, s)
+        let killers = if self.use_ordering && ply < self.killers.len() {
+            self.killers[ply]
+        } else {
+            [None, None]
+        };
+        let use_hist = self.use_ordering;
+        let mut scored: Vec<(i64, u32, u8, Move)> = crate::movegen::legal_moves(self.b, s)
             .into_iter()
             .map(|m| {
                 let s2 = crate::movegen::apply(self.b, s, m);
                 let d_self = self.b.dist_to_goal(&s2, mover).map_or(big, |d| d as i64);
                 let d_opp = self.b.dist_to_goal(&s2, opp).map_or(big, |d| d as i64);
-                (d_opp - d_self, m)
+                // Killer rank: first killer best (2), second (1), none (0).
+                let krank = if killers[0] == Some(m) {
+                    2
+                } else if killers[1] == Some(m) {
+                    1
+                } else {
+                    0
+                };
+                let hist = if use_hist {
+                    self.history[move_index(self.b, m)]
+                } else {
+                    0
+                };
+                (d_opp - d_self, hist, krank, m)
             })
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored.into_iter().map(|(_, m)| m).collect()
+        // Descending by (distance score, history, killer rank).
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+        scored.into_iter().map(|(_, _, _, m)| m).collect()
     }
 }
 

@@ -39,6 +39,16 @@ fn main() -> ExitCode {
     let start = board.initial();
 
     let mut solver = Solver::new(&board);
+    // Staged-measurement toggles (default ON). `QS_ORDERING=0` disables
+    // killer/history ordering; `QS_SYMMETRY=0` disables mirror TT
+    // canonicalization. Neither changes the returned value.
+    let off = |k: &str| std::env::var(k).map(|v| v == "0").unwrap_or(false);
+    if off("QS_ORDERING") {
+        solver.set_use_ordering(false);
+    }
+    if off("QS_SYMMETRY") {
+        solver.set_use_symmetry(false);
+    }
     let t0 = Instant::now();
     let value = solver.solve(&start);
     let elapsed = t0.elapsed();
