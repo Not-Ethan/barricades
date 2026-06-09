@@ -58,12 +58,9 @@ class PUCTSearch:
                 ch.prior = (1 - self.dirichlet_eps) * ch.prior + self.dirichlet_eps * nz
         for _ in range(self.sims):
             node = root
-            # Always descend past the (already-expanded) root, even when the
-            # engine reports it as terminal -- the side to move still has legal
-            # moves (e.g. an immediate winning step). Stop at terminal children.
-            while node.expanded and (node is root or not self.e.is_terminal(node.state)):
+            while node.expanded and not self.e.is_terminal(node.state):
                 node = self._select(node, root_player)
-            if node is not root and self.e.is_terminal(node.state):
+            if self.e.is_terminal(node.state):
                 w = self.e.winner(node.state)
                 v = 1.0 if w == root_player else -1.0
             else:

@@ -27,6 +27,9 @@ def test_mcts_takes_immediate_win_3x3():
     e = Engine(3, 1)
     enc = Encoder(e)
     wrap = NetWrapper(SmallNet(enc.n_actions, channels=8, blocks=1), e, enc)
-    s = State(((1, 1), (0, 0)), frozenset(), frozenset(), (1, 1), 0)
+    # p0 at (1,1) is one step from its goal row 2; p1 at (0,2) is NOT on its goal
+    # (row 0), so this is non-terminal and p0 has a genuine immediate win.
+    s = State(((1, 1), (0, 2)), frozenset(), frozenset(), (1, 1), 0)
+    assert not e.is_terminal(s)            # sanity: the fixture is a live position
     mv, _, _ = PUCTSearch(wrap, sims=80, seed=0).run(s)
     assert isinstance(mv, Step) and mv.to_cell == (1, 2)
