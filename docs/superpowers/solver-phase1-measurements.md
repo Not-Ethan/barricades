@@ -108,3 +108,60 @@ its earlier "Loss" is **untrustworthy**; post-fix the exact solve no longer comp
 time budget (the mandatory BFS-on-every-wall and iterative-deepening race search slow the
 un-optimised solver further), so its trustworthy value awaits the Task-8 optimisations. The
 old 6×5 numbers in the table above predate the fix and should be read with that caveat.
+
+## EXACT RETROGRADE race solver — replaces the panic-prone deepening race (2026-06-09)
+
+The iterative-deepening race fix (Bug 2 above) **rested on a FALSE invariant**: "a
+wall-less race is never a true draw". The race is `walls_left == [0, 0]` (no MORE walls
+can be placed) but **FROZEN walls remain on the board**. A frozen-wall maze can let one
+pawn **perpetually body-block** the only corridor the other must traverse → a **GENUINE
+DRAW** (with legal moves available; not zugzwang). The deepening code, finding neither a
+forced Win nor Loss, deepened to its hard ceiling `2*(w*h)^2` and then **`panic!`d** —
+and hung for minutes first. Confirmed reachable on 7×5 W≥4.
+
+**Fix: `endgame.rs::race_value` is now EXACT retrograde (backward-induction) labeling**
+over the finite `(pawn0, pawn1, turn)` graph of the frozen wall configuration:
+
+- Enumerate the forward-reachable race component from the query; build successor +
+  predecessor edges and a per-node remaining-successor counter.
+- Seed terminals/stuck nodes as **Loss** for the mover (opponent on goal, or no legal
+  step), the rare own-goal as **Win**.
+- Propagate backward to fixpoint: a node is **Win** as soon as ANY successor is Loss; a
+  node is **Loss** once ALL successors are Win (counter hits 0).
+- **Residue = Draw**: any node never finalized is a perpetual blockade.
+- Cache EVERY labeled pawn-pair into the persistent `State`-keyed `race_tt`, so all
+  pawn pairs of a wall config are memoized in one pass (later races with the same frozen
+  walls are instant hits). This is exactly the `t = 0/1` slice of the future `k`-wall
+  endgame tablebase.
+
+This is **exact and unconditional**: retrograde computes the game-theoretic value of
+every node of a finite graph with no depth truncation, so **frozen-wall blockade DRAWS
+are now labeled correctly** and **no false-draw or panic can occur**. It is `O(states +
+edges)`, fast even on draw-heavy mazes where the old search deepened to the ceiling.
+
+**Blockade-draw repro** (`Board::new(7,5,4)`, `pawn=[18,24]`, `h_walls=0x280240`,
+`v_walls=0x500400`, `walls_left=[0,0]`, `turn=1`): the old code **panicked**; the
+retrograde solver returns **Draw in ~0.3 ms** (`race_blockade_draw_7x5`).
+
+**Gates added** (`solver/tests/race_exactness.rs`, the original 3 retained):
+the blockade-draw repro; a **retrograde-vs-reference-negamax differential** over 2000+
+seeded frozen-wall configs on 3×3/4×3/3×4/4×4/5×4/3×5 plus the constructed blockade
+(reference = convention-matching exact negamax, no-move=Loss, depth `2*(w*h)^2`); and a
+**reused-vs-fresh Solver** agreement check over reachable 5×5-W2 / 6×5-W2 games.
+
+### Re-measured after the retrograde race solver (Apple M1, single-thread, 300 s cap)
+
+| Board | value | nodes | tt_entries | time | note |
+|---|---|---|---|---|---|
+| 6×5 W0 | **Loss** | 1,393 | 0 | 0.000 s | unchanged |
+| 6×5 W1 | **Loss** | 962,811 | 1,554 | 0.26 s | unchanged value; ~3× fewer nodes than pre-fix |
+| 6×5 W2 | **Loss** | 9,447,143 | 58,294 | 3.28 s | unchanged value; nodes 140.3M → 9.4M, 6.69 s → 3.28 s |
+| **5×5 W3** | **Loss** | 56,254,347 | 3,163,212 | **56.3 s** | **NOW FINISHES** (was timeout > 400 s under the deepening code) |
+| **6×5 W3** | — | — | — | **timeout > 300 s** | still infeasible (the with-walls αβ tree, not the race, is the bottleneck) |
+
+The retrograde race memo collapses the dominant cost (repeated per-leaf race search): one
+pass labels and caches every pawn pair of a frozen wall config, so 6×5 W2 drops from
+140.3M nodes to 9.4M, and **5×5 W3 now resolves to a trustworthy `Loss` in 56 s** where
+the prior code timed out. 6×5 W3 still exceeds the 300 s budget — its bottleneck is the
+with-walls alpha-beta tree (awaiting the remaining Task-8 levers: tablebase reuse across
+wall configs, symmetry, killer/history ordering), not the race endgame.

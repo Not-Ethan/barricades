@@ -1,15 +1,35 @@
-//! Bug-2 regression: the race endgame used a depth floor `2*(w+h)` that could
-//! fire on a long-path frozen maze and return a bogus `Draw` — but a wall-less
-//! race is never a true draw, so that Draw was a wrong game value that escaped
-//! `ab()` and flipped ancestors (and was order-dependent: reused vs fresh Solver
-//! disagreed). The fix replaces the floor with DFS-path cycle detection plus a
-//! panic-on-unresolved guard. These tests pin the two audit repros and the
-//! reused-vs-fresh differential that exposed the bug.
+//! Exactness gate for the race endgame solver (`endgame.rs::race_value`).
+//!
+//! The race is `walls_left == [0, 0]` (no MORE walls), but FROZEN walls remain
+//! on the board. A frozen-wall maze CAN be a genuine draw (one pawn perpetually
+//! body-blocks the only corridor the other must cross), with legal moves
+//! available — not zugzwang. The solver computes Win/Loss/**Draw** by EXACT
+//! retrograde (backward-induction) labeling over the finite `(pawn0, pawn1,
+//! turn)` graph: no depth bound, no panic.
+//!
+//! This was preceded by two earlier-and-wrong race fixes: a fixed depth floor
+//! `2*(w+h)` (Bug 2, returned a bogus Draw on long-path mazes), then iterative
+//! deepening + a panic-on-unresolved guard (rested on the FALSE invariant "a
+//! wall-less race is never a true draw" — it panicked / hung for minutes on a
+//! real blockade draw, reachable on 7x5 W>=4).
+//!
+//! Tests pinned here:
+//!   * `race_repro_a_5x5`, `race_repro_b_3x5` — the two decisive audit repros
+//!     (still `Loss`).
+//!   * `race_blockade_draw_7x5` — the NEW critical case: a genuine frozen-wall
+//!     blockade DRAW that the old code panicked on; must be `Draw` AND fast.
+//!   * `retrograde_vs_reference_negamax` — >=200 seeded frozen-wall configs +
+//!     a constructed blockade, retrograde value == convention-matching exact
+//!     negamax (no-move=Loss, exact depth `2*(w*h)^2`).
+//!   * `reused_vs_fresh_solver_agree`, `reused_vs_fresh_reachable` — reused
+//!     `Solver` value == fresh `Solver` value (persistent-memo soundness).
 
 use quoridor_solver::board::Board;
-use quoridor_solver::movegen::{apply, legal_moves};
+use quoridor_solver::movegen::{apply, legal_moves, legal_steps, legal_walls};
 use quoridor_solver::solver::{Solver, Value};
 use quoridor_solver::state::{Move, State};
+use std::collections::HashMap;
+use std::time::Instant;
 
 /// Minimal LCG for reproducible playouts.
 struct Lcg(u64);
@@ -152,5 +172,179 @@ fn reused_vs_fresh_solver_agree() {
     let c2 = run_reused_vs_fresh(5, 5, 3, 0, 300, 80, 8, 0xF00D);
     assert!(c1 >= 42, "3x5 W2: only {c1} positions checked");
     assert!(c2 >= 4, "5x5 W3: only {c2} race positions checked");
+    assert!(c1 + c2 >= 50, "only {} positions total, need >= 50", c1 + c2);
+}
+
+/// NEW critical case: a GENUINE frozen-wall blockade DRAW.
+///
+/// `walls_left == [0, 0]` (no more walls), but the frozen maze lets pawn 0
+/// perpetually body-block the single corridor pawn 1 must cross, so neither side
+/// can force a goal — a true Draw with legal moves available (not zugzwang). The
+/// previous iterative-deepening + panic code deepened to its ceiling and PANICKED
+/// (hanging for minutes) on this position; the exact retrograde solver labels it
+/// `Draw` in microseconds. We assert both the value AND that it returns fast
+/// (retrograde is O(states); a regression to the deepening search would blow this
+/// generous budget).
+#[test]
+fn race_blockade_draw_7x5() {
+    let b = Board::new(7, 5, 4);
+    let s = State {
+        pawn: [18, 24],
+        h_walls: 0x280240,
+        v_walls: 0x500400,
+        walls_left: [0, 0],
+        turn: 1,
+    };
+    let t0 = Instant::now();
+    let mut sol = Solver::new(&b);
+    let v = sol.solve(&s);
+    let dt = t0.elapsed();
+    assert_eq!(
+        v,
+        Value::Draw,
+        "7x5 frozen-wall blockade must be a genuine Draw (old code panicked here)"
+    );
+    // Retrograde is O(race states) ~ a few thousand nodes here; well under a
+    // second. A multi-minute deepening regression would fail this.
+    assert!(
+        dt.as_secs() < 5,
+        "blockade race must resolve fast (retrograde is O(states)); took {dt:?}"
+    );
+}
+
+/// Convention-matching EXACT reference: plain negamax over steps only, no-move =
+/// Loss for the mover, depth-bounded with a `Draw` floor. Memoized on
+/// `(state, depth)` so it is tractable at the exact depth. At depth `2*(w*h)^2`
+/// (one more than the longest possible simple line over the `(w*h)^2 * 2` race
+/// states) every Win/Loss is fully proven, so the floor only ever yields the
+/// TRUE game-theoretic `Draw` — i.e. this reference is exact, independent of the
+/// retrograde implementation under test.
+fn ref_race_nega(
+    b: &Board,
+    s: &State,
+    depth: u32,
+    memo: &mut HashMap<(State, u32), Value>,
+) -> Value {
+    if let Some(p) = b.winner(s) {
+        return if p == s.turn { Value::Win } else { Value::Loss };
+    }
+    if depth == 0 {
+        return Value::Draw;
+    }
+    if let Some(&v) = memo.get(&(*s, depth)) {
+        return v;
+    }
+    let mut best = Value::Loss; // no legal step => Loss for the mover.
+    for d in legal_steps(b, s) {
+        let v = ref_race_nega(b, &apply(b, s, Move::Step(d)), depth - 1, memo).negate();
+        if v > best {
+            best = v;
+        }
+        if best == Value::Win {
+            break;
+        }
+    }
+    memo.insert((*s, depth), best);
+    best
+}
+
+/// Differential: retrograde race value == convention-matching exact negamax over
+/// many seeded frozen-wall race configs (random legal walls, `walls_left=[0,0]`,
+/// random distinct pawns) on small boards, PLUS a constructed blockade -> Draw.
+/// >= 200 configs.
+#[test]
+fn retrograde_vs_reference_negamax() {
+    let boards = [(3u8, 3u8), (4, 3), (3, 4), (4, 4), (5, 4), (3, 5)];
+    let mut rng = Lcg::new(0xA11CE);
+    let mut total = 0usize;
+    let mut draws = 0usize;
+
+    for &(w, h) in &boards {
+        let b = Board::new(w, h, 4);
+        let cells = (w as u32) * (h as u32);
+        let depth = 2 * cells * cells; // exact reference depth (no truncation).
+        for _ in 0..60 {
+            // Build a frozen wall config: a few random NON-overlapping LEGAL walls.
+            let mut base = b.initial();
+            let nwalls = (rng.next() % 4) as usize;
+            for _ in 0..nwalls {
+                let ws = legal_walls(&b, &base);
+                if ws.is_empty() {
+                    break;
+                }
+                let m = ws[(rng.next() as usize) % ws.len()];
+                base = apply(&b, &base, m);
+            }
+            base.walls_left = [0, 0];
+
+            // A handful of random distinct on-board pawn placements + turn.
+            let cn = cells as u8;
+            for _ in 0..6 {
+                let p0 = (rng.next() as u8) % cn;
+                let p1 = (rng.next() as u8) % cn;
+                if p0 == p1 {
+                    continue;
+                }
+                let turn = (rng.next() % 2) as u8;
+                let mut q = base;
+                q.pawn = [p0, p1];
+                q.turn = turn;
+
+                let mut sol = Solver::new(&b);
+                let got = sol.solve(&q);
+                let mut memo = HashMap::new();
+                let want = ref_race_nega(&b, &q, depth, &mut memo);
+                assert_eq!(
+                    got, want,
+                    "retrograde != reference on {w}x{h} pawns={:?} h={:#x} v={:#x} turn={turn}",
+                    q.pawn, q.h_walls, q.v_walls
+                );
+                if got == Value::Draw {
+                    draws += 1;
+                }
+                total += 1;
+            }
+        }
+    }
+    assert!(total >= 200, "only {total} configs checked, need >= 200");
+
+    // Constructed blockade -> Draw (the 7x5 repro), also matched against the
+    // reference negamax to prove the reference itself certifies the Draw.
+    {
+        let b = Board::new(7, 5, 4);
+        let q = State {
+            pawn: [18, 24],
+            h_walls: 0x280240,
+            v_walls: 0x500400,
+            walls_left: [0, 0],
+            turn: 1,
+        };
+        let mut sol = Solver::new(&b);
+        let got = sol.solve(&q);
+        assert_eq!(got, Value::Draw, "constructed blockade must be Draw");
+        let cells = 7u32 * 5;
+        let depth = 2 * cells * cells;
+        let mut memo = HashMap::new();
+        let want = ref_race_nega(&b, &q, depth, &mut memo);
+        assert_eq!(want, Value::Draw, "reference negamax must also certify Draw");
+        draws += 1;
+    }
+    assert!(
+        draws >= 1,
+        "differential must include at least one Draw (got {draws})"
+    );
+}
+
+/// Reused-vs-fresh `Solver` agreement over REACHABLE random-game positions on
+/// 5x5 W2 and 6x5 W2 (the persistent race memo must give identical values
+/// whether warm or cold). >= 50 checks. Complements `reused_vs_fresh_solver_agree`
+/// (which biases hard toward the frozen-wall regime); here we walk reachable
+/// positions and compare in the low-wall regime where each solve is tractable.
+#[test]
+fn reused_vs_fresh_reachable() {
+    let c1 = run_reused_vs_fresh(5, 5, 2, 2, 200, 60, 60, 0x1357);
+    let c2 = run_reused_vs_fresh(6, 5, 2, 2, 200, 60, 60, 0x2468);
+    assert!(c1 >= 20, "5x5 W2: only {c1} positions checked");
+    assert!(c2 >= 20, "6x5 W2: only {c2} positions checked");
     assert!(c1 + c2 >= 50, "only {} positions total, need >= 50", c1 + c2);
 }

@@ -1,116 +1,106 @@
-//! Endgame tablebase slice: the wall-less *race*.
+//! Endgame tablebase slice: the *race* over a FROZEN wall configuration.
 //!
-//! When both players have exhausted their walls, the game reduces to a pure
-//! pawn race over steps only. With no walls left to place, neither path length
-//! can ever increase, so the race always resolves to a Win or Loss for the side
-//! to move — it can never be a Draw. This is the first endgame-tablebase slice;
-//! a `k`-wall generalization is deferred to Phase 1.
+//! When both players have exhausted their walls (`walls_left == [0, 0]`), no
+//! MORE walls can ever be placed, but the walls already on the board stay
+//! FROZEN. The game reduces to a pure pawn race over steps only, played on the
+//! fixed maze those frozen walls define. This module computes the exact
+//! game-theoretic value (Win / Loss / **Draw**) of such a race by EXACT
+//! retrograde analysis over the finite pawn-state graph — no depth bound, no
+//! panic.
 //!
-//! ## Module invariant: a wall-less race is never a true draw
+//! ## Frozen-wall races CAN be genuine draws
 //!
-//! Walls are frozen, so each player's shortest-path distance to goal is fixed
-//! and can only DECREASE as they advance — and `legal_walls` guarantees every
-//! reachable position keeps both pawns connected to their goal. Therefore one
-//! player always has a finite, strictly-progressing (acyclic) winning line:
-//! racing straight along a shortest path, whose length never grows. By optimal
-//! play exactly one side reaches its goal first, so the game value of every
-//! reachable wall-less race is Win or Loss — never Draw. A `Draw` escaping this
-//! module is therefore impossible; if one ever did it would be a bug, so we
-//! `panic!` instead of returning it (belt-and-suspenders).
+//! A previous implementation rested on the (false) invariant that a wall-less
+//! race is never a true draw and `panic!`d on anything else. That is wrong: the
+//! race is "no MORE walls" but FROZEN walls remain, and a frozen maze can let
+//! one pawn perpetually body-block the only corridor the other must traverse.
+//! Neither side can then force a goal, so the position is a GENUINE DRAW (with
+//! legal moves available — not zugzwang). Confirmed repro: `Board::new(7, 5, 4)`
+//! with `pawn = [18, 24]`, `h_walls = 0x280240`, `v_walls = 0x500400`,
+//! `walls_left = [0, 0]`, `turn = 1` is a stable Draw.
 //!
-//! ## Exactness under a depth bound — Win/Loss are bound-independent
+//! ## Why retrograde is exact
 //!
-//! The wall-less step graph is cyclic (pawns can shuffle), so an unbounded DFS
-//! would not terminate. We terminate it with a depth bound. The crucial fact is
-//! that on the `Loss < Draw < Win` lattice the depth floor can only ever taint a
-//! result *up to `Draw`* — it can never flip a true `Win` or `Loss`:
+//! The race graph for a fixed wall configuration is finite: a node is
+//! `(pawn0, pawn1, turn)` with `pawn0 != pawn1`, both on board, and there are at
+//! most `(w*h)^2 * 2` of them. Retrograde analysis (backward induction /
+//! standard pursuit-game labeling) computes the exact value of EVERY node of a
+//! finite graph and handles cycles correctly:
 //!
-//!   * The floor (depth 0) returns `Draw`.
-//!   * A node resolves to `Win` only via a child whose value is `Loss`
-//!     (`negate(Loss) = Win`). A floor-truncated node returns `Draw`, never
-//!     `Loss`, so a `Win` is never certified by a truncated line.
-//!   * A node resolves to `Loss` only when EVERY child has value `Win`
-//!     (`negate(Win) = Loss` is the max). A floor-truncated child returns `Draw`,
-//!     and `negate(Draw) = Draw > Loss`, which would lift the node off `Loss`.
-//!     So a `Loss` likewise can have no truncated child.
+//!   * Terminal/stuck nodes are seeded as `Loss` for the mover (the opponent is
+//!     already on its goal, or the mover has no legal step), and the rare
+//!     own-goal node as `Win`.
+//!   * A node is finalized `Win` as soon as ANY successor is finalized `Loss`
+//!     (the mover can step into a position the opponent loses).
+//!   * A node is finalized `Loss` only once ALL its successors are finalized
+//!     `Win` (every move hands the opponent a win).
+//!   * Any node never finalized is a `Draw`: neither side can force a win, i.e.
+//!     a perpetual blockade. This is the unique fixpoint of the negamax
+//!     equations on the `Loss < Draw < Win` lattice, so it is the exact value.
 //!
-//! Hence **any `Win` or `Loss` returned by the search is the exact, bound-
-//! independent game value**, and the only thing a too-small bound can produce is
-//! a spurious `Draw`. There is no tight analytic bound on the proof depth (a
-//! twisty frozen maze can force a long non-repeating proof line — a fixed bound
-//! that was too small here silently returned `Draw` under the old code). So we
-//! **iteratively deepen** the bound (doubling) until the top-level result is a
-//! definitive `Win`/`Loss`; the first such result is exact and we return it.
-//! Clean Win/Loss memo entries are depth-independent, so the `tt` is reused
-//! across deepening iterations — no clean work is repeated. A hard ceiling of
-//! `2*(w*h)^2` (one more than the longest possible non-repeating proof line over
-//! the `(w*h)^2 * 2` race states) bounds deepening; reaching it without a
-//! definitive result is impossible for a reachable race, so `race_value`
-//! `panic!`s — the loud guard that makes a silent wrong `Draw` impossible.
+//! Because the labeling is over the full finite graph with no truncation, no
+//! false draw and no missed win is possible, and there is no depth to exhaust —
+//! it is `O(nodes + edges)`, fast even on draw-heavy (blockade) mazes where the
+//! old iterative-deepening search would deepen to its ceiling and panic.
+//!
+//! ## Value convention (matches the rest of the solver EXACTLY)
+//!
+//! For a state `s` with side-to-move `t = s.turn`:
+//!   * `winner(s) == Some(t)`   -> `Win`  (own goal; unreachable in normal play).
+//!   * `winner(s) == Some(1-t)` -> `Loss` (opponent already on its goal).
+//!   * otherwise `value(s) = max over legal_steps of negate(value(child))`
+//!     (plain negamax; `Win > Draw > Loss`), and a non-terminal node with NO
+//!     legal step is a `Loss` for the mover.
 //!
 //! ## Persistent, exact memo
 //!
-//! The race value of a wall-less `State` (pawns + frozen walls + turn, with
-//! `walls_left == [0, 0]`) is a **pure, context-free function of that State**.
-//! That makes a memo keyed on the bare `State` and persisted across every race
-//! leaf of a `solve()` call sound — provided we only ever store EXACT values.
-//!
-//! We store only "depth-clean" resolved Win/Loss: a value is depth-clean iff its
-//! proof never bottomed out at the depth-0 floor anywhere in its subtree. As
-//! argued above every `Win`/`Loss` is automatically depth-clean (the floor only
-//! yields `Draw`), so in practice every reachable race resolves cleanly and is
-//! memoized. A depth-clean value used no depth information, so it is identical at
-//! any depth — hence safe to key on the bare `State` and reuse across leaves.
-//! Values that touched the floor (necessarily `Draw`) are never persisted.
+//! The race value of a frozen-wall `State` is a pure, context-free function of
+//! that `State` (pawns + frozen walls + turn, with `walls_left == [0, 0]`). One
+//! retrograde pass labels EVERY reachable pawn-pair for the current wall
+//! configuration at once, so we cache them ALL into the persistent `State`-keyed
+//! memo (`tt`). Subsequent races with the same frozen walls — any pawn pair, any
+//! turn — are then instant memo hits. This is exactly the `t = 0/1` slice of the
+//! future `k`-wall endgame tablebase.
 
+use crate::board::Board;
 use crate::solver::Value;
 use crate::state::State;
-use crate::board::Board;
 use rustc_hash::FxHashMap;
 
 /// Persistent, exact race memo keyed on the bare (walls-frozen) `State`.
-/// Every stored value is the position's EXACT, depth-independent game-theoretic
-/// value, so it is sound to reuse across any race leaf within a `solve()` call.
+/// Every stored value is the position's EXACT game-theoretic value, so it is
+/// sound to reuse across any race leaf within a `solve()` call (and across
+/// `solve()` calls on the same `Solver`).
 pub type RaceTt = FxHashMap<State, Value>;
 
-/// Absolute upper bound on the negamax resolution depth of a wall-less race.
-///
-/// A definitive Win/Loss is proven along a *simple* (non-repeating) line of race
-/// states; once a line is longer than the number of distinct race states it must
-/// repeat one, so no proof line need exceed `|reachable race states| - 1` plies.
-/// The race state space is `pawn0 x pawn1 x turn`, i.e. at most `(w*h)^2 * 2`
-/// states. We use `2 * (w*h)^2` as the hard ceiling: every reachable wall-less
-/// race resolves to Win/Loss at or below it. Iterative deepening (below) almost
-/// always resolves far sooner; this ceiling is only the loud-failure backstop.
-#[inline]
-fn race_depth_ceiling(b: &Board) -> u32 {
-    let cells = b.w as u32 * b.h as u32;
-    2 * cells * cells
+/// A race-graph node: the two pawn cell indices plus the side to move. The
+/// frozen wall configuration is fixed for the whole retrograde pass, so it is
+/// NOT part of the node key (it lives in the `Board` + the wall bits we carry
+/// in the working `State`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Node {
+    pawn: [u8; 2],
+    turn: u8,
 }
 
-/// Exact game value of a wall-less position for the side to move, paired with
-/// the number of race nodes visited (for profiling; the value is unaffected).
+/// Final game-theoretic label assigned by the retrograde pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Label {
+    Win,
+    Loss,
+}
+
+/// Exact game value of a frozen-wall race for the side to move, paired with the
+/// number of race nodes visited (for profiling; the value is unaffected).
 ///
-/// **Iterative-deepening** full-window negamax over **steps only** (walls are
-/// exhausted) with a PERSISTENT `State`-keyed memo of exact values (`tt`).
+/// Computed by EXACT retrograde (backward-induction) labeling over the finite
+/// `(pawn0, pawn1, turn)` graph of the current frozen wall configuration. Win,
+/// Loss, AND Draw are all returned exactly: there is no depth bound, no ceiling,
+/// and no panic — a perpetual blockade is labeled `Draw`, never mis-resolved.
 ///
-/// On the `Loss < Draw < Win` lattice the depth floor can only ever taint a
-/// result up to `Draw`; it can NEVER flip a true `Win`/`Loss` (a node is `Win`
-/// only via a `Loss` child, and a floored node returns `Draw`, never `Loss`; a
-/// node is `Loss` only when every child is `Win`, and a floored `Draw` child
-/// would lift it off `Loss`). Hence any `Win`/`Loss` the search returns is the
-/// exact, depth-independent game value, and the only effect of too small a bound
-/// is a spurious `Draw`. We therefore deepen the bound until the top-level result
-/// is a definitive `Win`/`Loss`: the first such result is exact. Clean Win/Loss
-/// memo entries are depth-independent, so the `tt` is reused across deepening
-/// iterations (and across leaves) — no clean work is repeated. Most leaves
-/// resolve at the smallest bound; only twisty frozen mazes deepen.
-///
-/// # Panics
-/// Panics if deepening reaches `race_depth_ceiling` without a definitive
-/// Win/Loss. A wall-less race is never a true draw (see module docs) and always
-/// resolves within that ceiling, so reaching it can only mean the search is
-/// unsound — we fail loudly rather than let a wrong value escape.
+/// One pass labels every pawn pair reachable (forward) from `s`, and ALL of
+/// them are cached into the persistent `State`-keyed memo `tt`, so any later
+/// race with the same frozen walls is an instant hit.
 pub fn race_value(b: &Board, s: &State, tt: &mut RaceTt) -> (Value, u64) {
     debug_assert_eq!(
         s.walls_left,
@@ -118,110 +108,221 @@ pub fn race_value(b: &Board, s: &State, tt: &mut RaceTt) -> (Value, u64) {
         "race_value called on a non-race state (walls remain): {:?}",
         s.walls_left
     );
-    let ceiling = race_depth_ceiling(b);
-    let mut nodes: u64 = 0;
-    // Start generous-but-small and double until definitive. The initial bound
-    // covers ordinary races (the leading pawn's monotone path plus slack); twisty
-    // mazes trigger one or more doublings.
-    let mut bound = 2 * (b.w as u32 + b.h as u32);
-    loop {
-        let (v, _clean) = race_nega(b, s, bound, tt, &mut nodes);
-        if v == Value::Win || v == Value::Loss {
-            return (v, nodes);
-        }
-        assert!(
-            bound < ceiling,
-            "BUG: wall-less race still unresolved (=Draw) at depth bound {} \
-             (ceiling {}). A wall-less race is never a true draw, so failing to \
-             resolve within the ceiling means the race search is unsound. \
-             pawns={:?} h_walls={:#x} v_walls={:#x} turn={}",
-            bound,
-            ceiling,
-            s.pawn,
-            s.h_walls,
-            s.v_walls,
-            s.turn,
-        );
-        bound = (bound * 2).min(ceiling);
-    }
-}
 
-/// Depth-bounded full-window negamax over pawn steps only, with an EXACT
-/// persistent `State`-keyed memo.
-///
-/// Returns `(value, depth_clean)`. `depth_clean` is `true` iff the returned
-/// value's proof never reached the depth-0 floor — i.e. the value equals the
-/// unbounded game value and is therefore exact and depth-independent. Only
-/// depth-clean Win/Loss results are persisted (see module docs). `nodes`
-/// accumulates internal nodes entered (profiling only).
-fn race_nega(
-    b: &Board,
-    s: &State,
-    depth: u32,
-    tt: &mut RaceTt,
-    nodes: &mut u64,
-) -> (Value, bool) {
-    *nodes += 1;
-    // Terminal: `winner` is the player who just moved (= 1 - turn); if that is
-    // the side to move it's a Win, else a Loss. Terminals are depth-clean.
-    if let Some(p) = b.winner(s) {
-        let v = if p == s.turn { Value::Win } else { Value::Loss };
-        return (v, true);
-    }
-    if depth == 0 {
-        // Cyclic-graph cutoff. NOT depth-clean: this line was truncated, so its
-        // `Draw` carries no proof and must never be persisted. At a small bound
-        // this fires on twisty mazes and propagates a `Draw` up to `race_value`,
-        // which then deepens the bound and retries; only if the hard ceiling is
-        // reached without resolution does `race_value` panic.
-        return (Value::Draw, false);
-    }
-
-    // Persistent exact memo: a hit is the position's true, depth-independent
-    // game value (only depth-clean results are stored), so it is exact at any
-    // depth and is itself depth-clean.
+    // Fast path: already memoized (e.g. a sibling leaf solved this wall config).
+    let query = Node {
+        pawn: s.pawn,
+        turn: s.turn,
+    };
     if let Some(&v) = tt.get(s) {
-        return (v, true);
+        return (v, 0);
     }
 
-    let mut best = Value::Loss;
-    // `clean` tracks whether the proof of `best` avoided the depth floor.
-    //  - A `Win` is proven by the single child that achieves it: clean iff that
-    //    child is clean.
-    //  - A `Loss`/`Draw` is proven by ALL children (none beat it): clean iff
-    //    every explored child is clean.
-    let mut all_children_clean = true;
-    let mut win_child_clean = false;
-    let mut found_win = false;
-    // Steps only — walls are exhausted in the race endgame.
-    for dest in crate::movegen::legal_steps(b, s) {
-        let s2 = crate::movegen::apply(b, s, crate::state::Move::Step(dest));
-        let (cv, cclean) = race_nega(b, &s2, depth - 1, tt, nodes);
-        let v = cv.negate();
-        all_children_clean &= cclean;
-        if v > best {
-            best = v;
+    // A reusable working state carrying the FROZEN wall bits; only `pawn`/`turn`
+    // change as we explore. `walls_left` stays `[0, 0]` so movegen never offers
+    // a wall move (and `legal_steps` ignores `walls_left` anyway).
+    let mut work = *s;
+
+    // ---- 1. Enumerate the forward-reachable component and build edges. ----
+    //
+    // `index[node] = id`; `succ[id]` = successor node ids; `pred[id]` =
+    // predecessor node ids; `succ_remaining[id]` = count of not-yet-WIN
+    // successors (the retrograde "all children are wins" counter).
+    let mut index: FxHashMap<Node, u32> = FxHashMap::default();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut succ: Vec<Vec<u32>> = Vec::new();
+    let mut pred: Vec<Vec<u32>> = Vec::new();
+    // Per-node seed label (Win/Loss) if it is a terminal/stuck node, else None.
+    let mut seed: Vec<Option<Label>> = Vec::new();
+
+    let mut visited = 0u64; // profiling: race nodes touched.
+
+    // Intern a node, allocating its id + parallel rows on first sight.
+    let intern = |nodes: &mut Vec<Node>,
+                      succ: &mut Vec<Vec<u32>>,
+                      pred: &mut Vec<Vec<u32>>,
+                      seed: &mut Vec<Option<Label>>,
+                      index: &mut FxHashMap<Node, u32>,
+                      n: Node|
+     -> u32 {
+        if let Some(&id) = index.get(&n) {
+            return id;
         }
-        // Full-window negamax: the only sound early break is on the lattice
-        // maximum (`Win`), which cannot be improved upon, so this break is
-        // exact. Record the winning child's cleanliness; its proof alone
-        // certifies the Win.
-        if best == Value::Win {
-            found_win = true;
-            win_child_clean = cclean;
-            break;
+        let id = nodes.len() as u32;
+        nodes.push(n);
+        succ.push(Vec::new());
+        pred.push(Vec::new());
+        seed.push(None);
+        index.insert(n, id);
+        id
+    };
+
+    let start = intern(
+        &mut nodes,
+        &mut succ,
+        &mut pred,
+        &mut seed,
+        &mut index,
+        query,
+    );
+
+    // BFS/DFS the reachable component, recording successor + predecessor edges.
+    let mut stack: Vec<u32> = vec![start];
+    // `expanded[id]` guards against re-expanding a node (its edges are built
+    // exactly once). A node can be interned (as a successor) before it is
+    // expanded, so this is separate from membership in `index`.
+    let mut expanded: Vec<bool> = vec![false];
+    while let Some(id) = stack.pop() {
+        if expanded[id as usize] {
+            continue;
+        }
+        expanded[id as usize] = true;
+        visited += 1;
+
+        let node = nodes[id as usize];
+        work.pawn = node.pawn;
+        work.turn = node.turn;
+
+        let t = node.turn;
+        // Terminal handling (matches the solver's convention exactly):
+        //  - own goal on the node's turn -> Win (rare; e.g. a query already on
+        //    its goal). It has no race successors that matter.
+        //  - opponent already on its goal -> Loss for the mover.
+        match b.winner(&work) {
+            Some(p) if p == t => {
+                seed[id as usize] = Some(Label::Win);
+                continue;
+            }
+            Some(_) => {
+                seed[id as usize] = Some(Label::Loss);
+                continue;
+            }
+            None => {}
+        }
+
+        let steps = crate::movegen::legal_steps(b, &work);
+        if steps.is_empty() {
+            // Non-terminal but stuck: a Loss for the mover (matches the solver —
+            // a no-step node never improves past the initial Loss).
+            seed[id as usize] = Some(Label::Loss);
+            continue;
+        }
+
+        // Build successor edges. A step moves the mover's pawn and flips turn.
+        for dest in steps {
+            let mut child = node;
+            child.pawn[t as usize] = dest;
+            child.turn = 1 - t;
+            let cid = intern(
+                &mut nodes,
+                &mut succ,
+                &mut pred,
+                &mut seed,
+                &mut index,
+                child,
+            );
+            // `expanded` must stay parallel to `nodes`.
+            if cid as usize >= expanded.len() {
+                expanded.resize(nodes.len(), false);
+            }
+            succ[id as usize].push(cid);
+            pred[cid as usize].push(id);
+            if !expanded[cid as usize] {
+                stack.push(cid);
+            }
         }
     }
 
-    // Reconcile cleanliness with the resolved value:
-    //  - Win: certified by the single winning child -> clean iff that child is.
-    //  - Loss/Draw: certified by all children failing to beat it -> clean iff
-    //    every explored child was clean.
-    let clean = if found_win { win_child_clean } else { all_children_clean };
+    let n = nodes.len();
+    // `succ_remaining[id]` starts at the successor count; each time a successor
+    // is finalized WIN we decrement it. Reaching 0 means ALL successors are WIN
+    // -> the node is a LOSS for its mover.
+    let mut succ_remaining: Vec<u32> = succ.iter().map(|v| v.len() as u32).collect();
 
-    // Persist ONLY depth-clean, definitive (exact, depth-independent) results.
-    if clean && (best == Value::Win || best == Value::Loss) {
-        tt.insert(*s, best);
+    // ---- 2. Initialize the worklist from seeded terminal/stuck nodes. ----
+    let mut label: Vec<Option<Label>> = vec![None; n];
+    let mut queue: Vec<u32> = Vec::new();
+    for id in 0..n {
+        if let Some(l) = seed[id] {
+            label[id] = Some(l);
+            queue.push(id as u32);
+        }
     }
-    (best, clean)
+
+    // ---- 3. Propagate backward to fixpoint (standard pursuit retrograde). ----
+    //
+    //  - A node finalized LOSS makes EVERY predecessor a WIN (the predecessor's
+    //    mover can step into this losing-for-the-opponent node).
+    //  - A node finalized WIN decrements each predecessor's remaining counter;
+    //    when a predecessor's counter hits 0 (all successors are WIN) it is a
+    //    LOSS.
+    let mut qi = 0usize;
+    while qi < queue.len() {
+        let id = queue[qi] as usize;
+        qi += 1;
+        match label[id].expect("queued node must be labeled") {
+            Label::Loss => {
+                // Predecessors become WIN.
+                let preds = std::mem::take(&mut pred[id]);
+                for &p in &preds {
+                    let p = p as usize;
+                    if label[p].is_none() {
+                        label[p] = Some(Label::Win);
+                        queue.push(p as u32);
+                    }
+                }
+                pred[id] = preds;
+            }
+            Label::Win => {
+                // Each predecessor loses one not-yet-WIN successor.
+                let preds = std::mem::take(&mut pred[id]);
+                for &p in &preds {
+                    let p = p as usize;
+                    if label[p].is_some() {
+                        continue;
+                    }
+                    succ_remaining[p] -= 1;
+                    if succ_remaining[p] == 0 {
+                        label[p] = Some(Label::Loss);
+                        queue.push(p as u32);
+                    }
+                }
+                pred[id] = preds;
+            }
+        }
+    }
+
+    // ---- 4 & 5. Residue = Draw; cache EVERY node's exact value into `tt`. ----
+    //
+    // Caching all reachable pawn pairs (not just the query) is what makes a
+    // later race with the same frozen walls an instant memo hit.
+    let mut query_value: Option<Value> = None;
+    for id in 0..n {
+        let node = nodes[id];
+        let v = match label[id] {
+            Some(Label::Win) => Value::Win,
+            Some(Label::Loss) => Value::Loss,
+            None => Value::Draw, // never finalized -> perpetual blockade.
+        };
+        let key = State {
+            pawn: node.pawn,
+            h_walls: s.h_walls,
+            v_walls: s.v_walls,
+            walls_left: [0, 0],
+            turn: node.turn,
+        };
+        tt.insert(key, v);
+        if node == query {
+            query_value = Some(v);
+        }
+    }
+
+    // Sanity: retrograde labels every node of the finite graph (Win/Loss/Draw),
+    // so the query — which is in the enumerated component by construction — is
+    // always assigned a value. This assert can never fire on a correct pass.
+    let v = query_value.expect(
+        "retrograde pass must assign the query node a value (Win/Loss/Draw); \
+         missing assignment indicates a bug in race enumeration",
+    );
+    (v, visited)
 }
