@@ -34,6 +34,7 @@ def _anneal(it, iterations, warmup=0.6):
 
 def train_small_az(N, W, iterations=10, games=40, sims=40, epochs=4, lr=1e-3,
                    channels=16, blocks=2, seed=0, log=lambda *_: None):
+    torch.manual_seed(seed)                        # reproducible net init
     e = Engine(N, W)
     enc = Encoder(e)
     net = SmallNet(enc.n_actions, channels=channels, blocks=blocks)
@@ -69,17 +70,23 @@ def _reachable_positions(e, n, seed):
 
 
 def optimal_move_agreement(net, e, enc, n_positions=40, az_sims=80, seed=0):
-    """Fraction of positions where AZ's chosen move is in the solver's optimal set."""
+    """Fraction of NON-FORCED positions where AZ's chosen move is in the solver's
+    optimal set. Positions with a single legal move are skipped: a lone move is
+    trivially 'optimal' and would inflate the metric. Returns (agreement, n_scored)
+    so callers can see how many positions actually counted."""
     sol = Solver(e)
     wrap = NetWrapper(net, e, enc)
-    hits = 0
+    hits = scored = 0
     positions = _reachable_positions(e, n_positions, seed)
     for i, s in enumerate(positions):
+        if len(e.legal_moves(s)) <= 1:             # forced move -> trivial, skip
+            continue
         mv, _, _ = PUCTSearch(wrap, sims=az_sims, seed=seed + i).run(s)
         _, best = sol.solve(s)
+        scored += 1
         if mv in best:
             hits += 1
-    return hits / max(1, len(positions))
+    return hits / max(1, scored), scored
 
 
 def value_accuracy(net, e, enc, n_positions=40, seed=0):
@@ -150,13 +157,14 @@ def run(N=3, W=1, iterations=10, games=40, sims=40, az_sims=80, seed=0):
     print(f"[{N}x{N} W={W}] theoretical: value={val} favors={side}")
     net, e, enc = train_small_az(N, W, iterations=iterations, games=games,
                                  sims=sims, seed=seed, log=print)
-    agree = optimal_move_agreement(net, e, enc, n_positions=60, az_sims=az_sims, seed=seed + 1)
+    agree, n_scored = optimal_move_agreement(net, e, enc, n_positions=60,
+                                             az_sims=az_sims, seed=seed + 1)
     res = az_vs_solver(net, e, enc, games=20, az_sims=az_sims, seed=seed + 2)
     vacc = value_accuracy(net, e, enc, n_positions=60, seed=seed + 3)
-    print(f"  optimal-move agreement: {agree:.1%}")
+    print(f"  optimal-move agreement: {agree:.1%} (over {n_scored} non-forced positions)")
     print(f"  value-accuracy (corr w/ solver): {vacc:.3f}")
     print(f"  AZ-vs-solver: {res}")
-    return {"theoretical": (val, side), "agreement": agree,
+    return {"theoretical": (val, side), "agreement": agree, "n_scored": n_scored,
             "value_accuracy": vacc, **res}
 
 
