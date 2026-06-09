@@ -53,21 +53,32 @@ fn main() -> ExitCode {
     let value = solver.solve(&start);
     let elapsed = t0.elapsed();
 
-    // `tt_bytes` is a rough lower-bound estimate of the dominant TT memory
-    // (entries times per-entry key+value size); it ignores HashMap overhead, so
-    // it under-counts true RSS — a TT-footprint estimate, not real resident size.
+    // The main TT is now a DENSE, fixed-capacity packed-key array. `tt_entries`
+    // is the live occupied-slot count; `tt_capacity` the fixed slot count;
+    // `tt_bytes` the exact heap footprint of the flat array (capacity *
+    // entry_size, fully resident); `entry_size` the per-slot byte size. Capacity
+    // is set by `QS_TT_MB` (megabytes; default 2048).
     let tt_entries = solver.tt_len();
+    let tt_capacity = solver.tt_capacity();
     let tt_bytes = solver.tt_bytes();
+    let fill_pct = if tt_capacity > 0 {
+        100.0 * tt_entries as f64 / tt_capacity as f64
+    } else {
+        0.0
+    };
 
     println!(
-        "W×H={}×{} walls={}  value={:?}  nodes={}  tt_entries={}  tt_bytes≈{}  time={:.3}s",
+        "W×H={}×{} walls={}  value={:?}  nodes={}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  time={:.3}s",
         w,
         h,
         walls,
         value,
         solver.nodes,
         tt_entries,
+        tt_capacity,
+        fill_pct,
         tt_bytes,
+        Solver::tt_entry_size(),
         elapsed.as_secs_f64(),
     );
 

@@ -8,7 +8,6 @@
 use crate::board::Board;
 use crate::endgame::RaceTt;
 use crate::state::{Move, State};
-use rustc_hash::FxHashMap;
 
 /// Maximum search ply we keep killer slots for. The `solve()` depth ceiling for
 /// the validation boards is well under this, and any deeper ply simply skips the
@@ -49,6 +48,231 @@ enum Flag {
     Upper,
 }
 
+/// One dense transposition-table entry: a single CANONICAL position (one entry
+/// per position — depth is NOT part of the key, it is stored in the entry and
+/// used by the depth-fold reuse guard) with its proven `value`, bound `flag`,
+/// and the remaining search `depth` at which that bound was established.
+///
+/// `key` is the FULL injective u128 pack of the canonical state (see
+/// `pack_u128`). It is stored and compared in full on every probe, so a
+/// hash-bucket collision can never return a foreign entry's value: a mismatched
+/// key is a hard MISS (recompute), never a wrong hit.
+///
+/// `key == 0` is the empty-slot sentinel. To make that airtight regardless of
+/// the packed layout, every stored key has a constant high "occupied" bit ORed
+/// in (`OCCUPIED_BIT`, bit 127), so a live key is never 0 even for the all-zero
+/// packed state (e.g. pawns at cell 0, no walls, turn 0).
+#[derive(Clone, Copy)]
+struct Entry {
+    /// Full injective packed canonical key, with `OCCUPIED_BIT` set. 0 = empty.
+    key: u128,
+    value: Value,
+    flag: Flag,
+    /// Remaining search depth at which `value`/`flag` was proven. The depth-fold
+    /// reuse rule only trusts this entry for a query depth `d <= depth`.
+    depth: u16,
+}
+
+impl Entry {
+    /// The empty-slot sentinel (`key == 0`).
+    const EMPTY: Entry = Entry {
+        key: 0,
+        value: Value::Draw,
+        flag: Flag::Exact,
+        depth: 0,
+    };
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.key == 0
+    }
+}
+
+/// A high "this slot is occupied" bit ORed into every stored key, guaranteeing a
+/// live entry's `key` is never 0 (so `key == 0` is an unambiguous empty
+/// sentinel) while preserving injectivity (it is a constant, so it never
+/// conflates two distinct packed states). Bit 127 is far above any field
+/// `pack_u128` writes (the layout uses well under 100 bits for <=7x7).
+const OCCUPIED_BIT: u128 = 1u128 << 127;
+
+/// Per-entry byte size of the dense table's element. Reported by the CLI and
+/// used to derive slot capacity from the `QS_TT_MB` budget. The u128 `key`
+/// forces 16-byte alignment, so `Entry` (key 16B + value/flag/depth ~4B) pads to
+/// 32 bytes — the figure the `#slots = QS_TT_MB * 1MiB / TT_ENTRY_SIZE` sizing
+/// divides by, making the table's heap use approximately `QS_TT_MB` MiB.
+const TT_ENTRY_SIZE: usize = size_of::<Entry>();
+
+/// Default main-TT budget in MiB when `QS_TT_MB` is unset/invalid.
+const DEFAULT_TT_MB: usize = 2048;
+
+/// Largest power of two `<= n` (with `n >= 1`); keeps the dense table's slot
+/// count a power of two so the index can be a mask rather than a `%`.
+#[inline]
+fn prev_pow2(n: usize) -> usize {
+    debug_assert!(n >= 1);
+    if n.is_power_of_two() {
+        n
+    } else {
+        1usize << (usize::BITS - 1 - n.leading_zeros()) as usize
+    }
+}
+
+/// A bucket: two slots sharing one index, the standard 2-way chess-engine TT
+/// layout. Slot 0 is DEPTH-PREFERRED (keep the deepest result), slot 1 is
+/// ALWAYS-REPLACE (keep the most recent). Two slots per index sharply cut the
+/// eviction-thrash a single slot suffers from hash collisions: a deep, valuable
+/// entry in slot 0 survives a colliding shallow probe (which lands in slot 1)
+/// instead of being clobbered, so the hit rate (and node count) is markedly
+/// better than a 1-slot table at the same capacity.
+type Bucket = [Entry; 2];
+
+/// Dense, fixed-capacity, open-addressed transposition table.
+///
+/// A flat `Vec<Bucket>` of `nbuckets` 2-slot buckets (no per-entry `Option`, no
+/// chaining, no `HashMap` overhead): `nbuckets` is a power of two and the bucket
+/// index is `hash(key) & (nbuckets - 1)`. Capacity is FIXED at construction from
+/// the `QS_TT_MB` budget and never grows.
+///
+/// Replacement within a bucket (after an in-place update if the key is already
+/// resident in either slot):
+///   * slot 0 (depth-preferred): the new entry takes it when slot 0 is empty or
+///     `new.depth >= slot0.depth`; the displaced occupant falls through to slot 1;
+///   * slot 1 (always-replace): unconditionally takes whatever did not win slot 0.
+///
+/// A DIFFERENT position may thus evict a resident one (the table is a cache; an
+/// eviction only forces a recompute, never a wrong value).
+///
+/// EXACTNESS: this is a pure alpha-beta cache. Three independent guarantees keep
+/// it sound:
+///   1. The FULL u128 key is stored and verified on probe — a hash collision
+///      (foreign key in the same bucket) is a MISS, never a foreign hit.
+///   2. A hit is only USED when `slot.depth >= query_depth` (the depth-fold
+///      reuse rule; see `Solver::ab`), which is the standard sound chess-engine
+///      rule on the `Loss < Draw < Win` lattice.
+///   3. Eviction / capacity are correctness-neutral: a missing or overwritten
+///      entry only forces re-search; alpha-beta returns the exact value under
+///      ANY subset of cached entries.
+struct DenseTt {
+    buckets: Vec<Bucket>,
+    /// `buckets.len() - 1`. The bucket count is always a power of two, so the
+    /// index is `hash & mask` — a single AND, not a 64-bit `%` (which, at two
+    /// table ops per node over tens of millions of nodes, was a measurable cost).
+    mask: usize,
+    /// Live (occupied) slot count, for reporting only.
+    fill: usize,
+}
+
+impl DenseTt {
+    /// Build a fixed table whose TOTAL slot count is the largest power of two
+    /// `<= min(mb-budget, max_slots)` (at least two, i.e. one bucket); the bucket
+    /// count is half that. `max_slots` is a board-aware ceiling so a tiny board
+    /// does not eagerly allocate (and zero) a multi-gigabyte array; pass a large
+    /// value to let the MiB budget govern. Rounding DOWN to a power of two keeps
+    /// the heap use within the budget while letting the index be a mask. Both
+    /// ceilings are exactness-neutral (capacity only trades RAM for re-search).
+    fn with_capacity(mb: usize, max_slots: usize) -> DenseTt {
+        let bytes = mb.saturating_mul(1024 * 1024);
+        let want_slots = (bytes / TT_ENTRY_SIZE).max(2).min(max_slots.max(2));
+        // Power-of-two TOTAL slots, then halve to buckets (also a power of two).
+        let nslots = prev_pow2(want_slots).max(2);
+        let nbuckets = nslots / 2;
+        DenseTt {
+            buckets: vec![[Entry::EMPTY; 2]; nbuckets],
+            mask: nbuckets - 1,
+            fill: 0,
+        }
+    }
+
+    /// Map a full packed key to a bucket index. Uses a fast integer mix (splitmix-
+    /// style on the two halves) so the index is well-spread, then masks to the
+    /// power-of-two bucket count. Correctness never depends on the hash (the probe
+    /// verifies the full key), only the bucket it lands in, so any deterministic
+    /// mix is fine.
+    #[inline]
+    fn bucket_index(&self, key: u128) -> usize {
+        let lo = key as u64;
+        let hi = (key >> 64) as u64;
+        let mut x = lo ^ hi.rotate_left(32);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51afd7ed558ccd);
+        x ^= x >> 33;
+        (x as usize) & self.mask
+    }
+
+    /// Probe for `key`. Returns the stored `(value, flag, depth)` from whichever
+    /// of the bucket's two slots carries the matching FULL key — a different (or
+    /// empty) key in both slots is a MISS. The depth-fold reuse decision is made
+    /// by the caller against `depth`.
+    #[inline]
+    fn probe(&self, key: u128) -> Option<(Value, Flag, u16)> {
+        let b = &self.buckets[self.bucket_index(key)];
+        for e in b {
+            if e.key == key {
+                return Some((e.value, e.flag, e.depth));
+            }
+        }
+        None
+    }
+
+    /// Store `(value, flag, depth)` for `key` under the 2-way depth-preferred /
+    /// always-replace policy (see the struct doc). `key` must already carry
+    /// `OCCUPIED_BIT` (so it is never 0).
+    #[inline]
+    fn store(&mut self, key: u128, value: Value, flag: Flag, depth: u16) {
+        let new = Entry {
+            key,
+            value,
+            flag,
+            depth,
+        };
+        let idx = self.bucket_index(key);
+        let b = &mut self.buckets[idx];
+        // 1. In-place update if the key is already resident in either slot:
+        //    keep the deeper/equal-depth bound for the same position.
+        for e in b.iter_mut() {
+            if e.key == key {
+                if depth >= e.depth {
+                    *e = new;
+                }
+                return;
+            }
+        }
+        // 2. Empty slot 0 -> fill it.
+        if b[0].is_empty() {
+            b[0] = new;
+            self.fill += 1;
+            return;
+        }
+        // 3. Empty slot 1 -> fill it.
+        if b[1].is_empty() {
+            b[1] = new;
+            self.fill += 1;
+            return;
+        }
+        // 4. Both slots occupied by other keys: depth-preferred eviction. If the
+        //    newcomer is at least as deep as slot 0, it takes slot 0 and slot 0's
+        //    occupant is demoted to the always-replace slot 1; otherwise the
+        //    newcomer goes straight to slot 1. fill is unchanged (overwrite).
+        if depth >= b[0].depth {
+            b[1] = b[0];
+            b[0] = new;
+        } else {
+            b[1] = new;
+        }
+    }
+
+    /// Live occupied-slot count (reporting only).
+    #[inline]
+    fn len(&self) -> usize {
+        self.fill
+    }
+
+    /// Total fixed slot capacity (`nbuckets * 2`).
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.buckets.len() * 2
+    }
+}
+
 /// Independent brute-force negamax — the correctness oracle. No alpha-beta, no
 /// TT, no ordering; just a plain depth-bounded minimax over `Value`. Used by the
 /// differential tests to pin the optimized `Solver`.
@@ -72,11 +296,18 @@ pub fn brute_value(b: &Board, s: &State, depth: u32) -> Value {
     best
 }
 
-/// The optimized exact solver. Borrows a `Board` and owns a transposition table
-/// keyed on `(state, depth)`.
+/// The optimized exact solver. Borrows a `Board` and owns a dense, packed-key,
+/// depth-folded, fixed-capacity transposition table (one entry per canonical
+/// position; depth stored in the entry, not the key).
 pub struct Solver<'a> {
     b: &'a Board,
-    tt: FxHashMap<(State, u32), (Value, Flag)>,
+    /// Dense, fixed-capacity main transposition table. ONE entry per canonical
+    /// position (u128-packed key), with the remaining search depth stored IN the
+    /// entry and reused under the depth-fold rule (`stored.depth >= query`). Pure
+    /// alpha-beta cache: eviction/capacity only force re-search, never a wrong
+    /// value, and the full key is verified on probe. Capacity from `QS_TT_MB`
+    /// (default `DEFAULT_TT_MB`).
+    tt: DenseTt,
     /// PERSISTENT, exact race endgame memo keyed on the bare (walls-frozen)
     /// `State`. Every entry is the position's exact game-theoretic value, so it
     /// is sound to reuse across every walls-exhausted leaf within a `solve()`
@@ -218,6 +449,43 @@ fn pack_key(s: &State) -> (u64, u64, u64) {
     (s.h_walls, s.v_walls, small)
 }
 
+/// Losslessly pack a `State` into a single `u128` transposition-table key,
+/// INJECTIVELY for every board of size `<= 7x7` (the solver's domain; `idx < 64`
+/// per `Board`, and anchors `(w-1)*(h-1) <= 36`). The layout, low-to-high:
+///
+///   bits  0..6    pawn[0]  cell index (0..48 for 7x7; 6 bits hold 0..63)
+///   bits  6..12   pawn[1]  cell index (6 bits)
+///   bits 12..16   walls_left[0]  (4 bits; validation boards use <= 10 walls)
+///   bits 16..20   walls_left[1]  (4 bits)
+///   bit  20       turn  (1 bit)
+///   bits 24..60   h_walls  anchor bitset (36 bits: covers 7x7's 36 anchors)
+///   bits 64..100  v_walls  anchor bitset (36 bits)
+///
+/// Every field occupies a disjoint, fixed bit-range wide enough for the whole
+/// `<= 7x7` domain, so two distinct states never collide: the pack is a bijection
+/// onto its image. (The wall bitsets only ever set their low `(w-1)*(h-1) <= 36`
+/// bits, so 36-bit fields are exact and lossless.) The result uses well under
+/// 100 bits, leaving the top bits — including `OCCUPIED_BIT` (bit 127) — free.
+///
+/// INJECTIVITY is the load-bearing property: the dense TT stores this full key
+/// and rejects any slot whose key differs, so injectivity guarantees a probe hit
+/// is the SAME canonical position, never an aliased one. `walls_left` is bounded
+/// by the 4-bit fields here; the solver's boards stay well within that (<= 10),
+/// and a `debug_assert` guards it.
+#[inline]
+fn pack_u128(s: &State) -> u128 {
+    debug_assert!(s.walls_left[0] < 16 && s.walls_left[1] < 16, "walls_left field is 4 bits");
+    debug_assert!(s.turn < 2);
+    debug_assert!(s.h_walls < (1u64 << 36) && s.v_walls < (1u64 << 36), "anchor bitset exceeds 36 bits");
+    (s.pawn[0] as u128)
+        | ((s.pawn[1] as u128) << 6)
+        | ((s.walls_left[0] as u128) << 12)
+        | ((s.walls_left[1] as u128) << 16)
+        | ((s.turn as u128) << 20)
+        | ((s.h_walls as u128) << 24)
+        | ((s.v_walls as u128) << 64)
+}
+
 /// The canonical (orientation-folding) representative of `s`: the
 /// lexicographically-smaller of `s` and its horizontal mirror, by `pack_key`.
 /// Because mirror is value-preserving with the same side to move, `s` and its
@@ -232,11 +500,69 @@ fn canonical(b: &Board, perm: Option<&[u8]>, s: &State) -> State {
     }
 }
 
+/// Cheap, saturating UPPER bound on the number of distinct CANONICAL positions
+/// this board admits — the most slots a fixed TT could ever usefully hold (depth
+/// is no longer in the key, so this is far smaller than the old per-depth count).
+/// Used to cap allocation so a tiny board does not eagerly allocate (and zero) a
+/// multi-gigabyte array. Saturates to `usize::MAX` on any overflow (large
+/// boards), so big boards keep the full `QS_TT_MB` budget. EXACTNESS-NEUTRAL: a
+/// larger table only avoids re-search; an over-tight one only forces it.
+///
+/// Bound = pawn_pairs * walls_left_combos * wall_layouts * 2 turns. The board
+/// can hold at most `placed = 2*walls` walls total, each in one of `slots =
+/// 2*anchors` orientation-positions, so `wall_layouts <= sum_{i=0..=placed}
+/// C(slots, i)` (choose which positions are filled, ignoring the H/V-share-an-
+/// anchor legality — a loose but valid over-count). This stays TIGHT for the
+/// low-wall boards the tests hammer (so they do not eagerly allocate gigabytes)
+/// while saturating to `usize::MAX` for high-wall / large boards, where the
+/// `QS_TT_MB` budget then governs. EXACTNESS-NEUTRAL either way.
+fn board_key_ceiling(b: &Board) -> usize {
+    let cells = (b.w as usize) * (b.h as usize);
+    let pawn_pairs = cells.saturating_mul(cells);
+    let wl = (b.walls as usize) + 1;
+    let wl_combos = wl.saturating_mul(wl);
+    let anchors = (b.w as usize).saturating_sub(1) * (b.h as usize).saturating_sub(1);
+    let slots = anchors.saturating_mul(2);
+    let placed = (b.walls as usize).saturating_mul(2).min(slots);
+    // sum_{i=0..=placed} C(slots, i), saturating.
+    let mut wall_layouts: usize = 0;
+    let mut binom: usize = 1; // C(slots, 0)
+    for i in 0..=placed {
+        wall_layouts = wall_layouts.saturating_add(binom);
+        // C(slots, i+1) = C(slots, i) * (slots - i) / (i + 1).
+        binom = binom
+            .saturating_mul(slots.saturating_sub(i))
+            .saturating_div(i + 1);
+    }
+    pawn_pairs
+        .saturating_mul(wl_combos)
+        .saturating_mul(wall_layouts)
+        .saturating_mul(2)
+}
+
 impl<'a> Solver<'a> {
+    /// Build a solver whose main-TT capacity is read from `QS_TT_MB` (megabytes;
+    /// default `DEFAULT_TT_MB` when unset/unparseable/zero). The race endgame memo
+    /// stays unbounded/persistent (it must remain exact and is small).
     pub fn new(b: &'a Board) -> Solver<'a> {
+        let mb = std::env::var("QS_TT_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&m| m > 0)
+            .unwrap_or(DEFAULT_TT_MB);
+        Solver::with_tt_mb(b, mb)
+    }
+
+    /// Build a solver with an explicit main-TT cap in MiB. Test hook for the
+    /// tiny-cap eviction-stress gate, and the single place `Solver::new` funnels
+    /// through after resolving `QS_TT_MB`. Sized to `min(tt_mb, board ceiling)`
+    /// so small boards never allocate a multi-GiB array (see `board_key_ceiling`);
+    /// both ceilings are exactness-neutral.
+    pub fn with_tt_mb(b: &'a Board, tt_mb: usize) -> Solver<'a> {
+        let tt = DenseTt::with_capacity(tt_mb.max(1), board_key_ceiling(b));
         Solver {
             b,
-            tt: FxHashMap::default(),
+            tt,
             race_tt: RaceTt::default(),
             killers: vec![[None, None]; MAX_PLY],
             history: vec![0u32; MOVE_INDEX_SPAN],
@@ -245,6 +571,11 @@ impl<'a> Solver<'a> {
             use_symmetry: true,
             nodes: 0,
         }
+    }
+
+    /// The dense table's per-entry byte size (for CLI reporting).
+    pub fn tt_entry_size() -> usize {
+        TT_ENTRY_SIZE
     }
 
     /// Enable/disable the killer+history move ordering (default on). For staged
@@ -264,19 +595,22 @@ impl<'a> Solver<'a> {
         self.race_tt.len()
     }
 
-    /// Number of entries currently in the transposition table.
+    /// Number of occupied slots currently in the transposition table.
     pub fn tt_len(&self) -> usize {
         self.tt.len()
     }
 
-    /// Rough lower-bound estimate of the transposition table's memory footprint
-    /// in bytes: entry count times the per-entry key+value size
-    /// (`(State, u32)` key plus `(Value, Flag)` value). Ignores `HashMap`
-    /// overhead and load factor, so it under-counts true RSS — it is an estimate
-    /// of the dominant TT memory only, not real resident size.
+    /// Fixed total slot capacity of the dense transposition table.
+    pub fn tt_capacity(&self) -> usize {
+        self.tt.capacity()
+    }
+
+    /// Heap footprint of the dense transposition table in bytes. Unlike the old
+    /// estimate this is EXACT for the dominant allocation: the table is a flat
+    /// `Vec<Entry>` of fixed `capacity` slots, so the whole array
+    /// (`capacity * TT_ENTRY_SIZE`) is resident regardless of fill.
     pub fn tt_bytes(&self) -> usize {
-        let per_entry = size_of::<(State, u32)>() + size_of::<(Value, Flag)>();
-        self.tt.len() * per_entry
+        self.tt.capacity() * TT_ENTRY_SIZE
     }
 
     /// Solve `s` to its game-theoretic value for the side to move.
@@ -345,8 +679,34 @@ impl<'a> Solver<'a> {
         } else {
             *s
         };
-        let key = (canon, depth);
-        if let Some(&(val, flag)) = self.tt.get(&key) {
+        // DEPTH-FOLDED key: one entry per CANONICAL position; the remaining
+        // search `depth` is NOT in the key (it lives in the entry). The query
+        // depth here is `depth`; the entry caps at `u16::MAX` (the solve ceiling
+        // is far below that), and `OCCUPIED_BIT` keeps a live key non-zero.
+        let key = pack_u128(&canon) | OCCUPIED_BIT;
+        let qdepth = depth.min(u16::MAX as u32) as u16;
+        // SOUNDNESS OF DEPTH-FOLD REUSE (the correctness-sensitive part). We may
+        // reuse a stored bound ONLY when `stored.depth >= qdepth`. This is the
+        // standard chess-engine rule, and it is exact on the `Loss < Draw < Win`
+        // lattice of this depth-bounded negamax:
+        //   * A definitive Win/Loss proven within `stored.depth` plies is a forced
+        //     result — it is the TRUE game value and stays exact at ANY query
+        //     depth, in particular at the shallower `qdepth <= stored.depth`.
+        //   * A `Draw` returned at `stored.depth` means "no decision within
+        //     `stored.depth` plies"; for any shallower horizon `qdepth <=
+        //     stored.depth` there is likewise no decision (a forced win/loss
+        //     reachable within `qdepth` plies would be reachable within
+        //     `stored.depth >= qdepth` too), so the value is still `Draw`. Hence a
+        //     deeper-or-equal result is always a valid bound for the shallower
+        //     query.
+        //   * Reusing a SHALLOWER result for a DEEPER query is NOT sound (a deeper
+        //     search could turn a shallow `Draw` into a decision), and the
+        //     `stored.depth >= qdepth` guard below forbids it: such a hit is a MISS.
+        // The bound flags are then applied exactly as in plain alpha-beta. The
+        // full u128 key is verified inside `probe`, so a hash collision is a MISS.
+        if let Some((val, flag, sdepth)) = self.tt.probe(key)
+            && sdepth >= qdepth
+        {
             match flag {
                 Flag::Exact => return val,
                 Flag::Lower => {
@@ -388,6 +748,9 @@ impl<'a> Solver<'a> {
             }
         }
 
+        // Flag relative to the ORIGINAL window: `alpha0` is alpha captured BEFORE
+        // any TT narrowing above; `beta` is the (possibly narrowed) upper bound,
+        // matching the prior implementation exactly so no value can change.
         let flag = if best <= alpha0 {
             Flag::Upper
         } else if best >= beta {
@@ -395,7 +758,9 @@ impl<'a> Solver<'a> {
         } else {
             Flag::Exact
         };
-        self.tt.insert(key, (best, flag));
+        // Store under the depth-fold table: one entry per canonical position,
+        // tagged with the query depth `qdepth` at which this bound was proven.
+        self.tt.store(key, best, flag, qdepth);
         best
     }
 
