@@ -45,26 +45,31 @@ positions; AZ-vs-solver over 20 games where AZ plays the theoretically-winning s
 the solver randomizes among its **optimal** move set each game (so AZ must beat *every*
 optimal line, not one fixed line).
 
-| Board | Theoretical | Optimal-move agreement | Value-head corr w/ solver | AZ-vs-solver winrate | Never loses a won game |
+Optimal-move agreement is measured over **non-forced** positions only (positions with a
+single legal move are skipped — a lone move is trivially "optimal" and would inflate the
+metric); training is `torch.manual_seed`-seeded for reproducibility.
+
+| Board | Theoretical | Optimal-move agreement (non-forced) | Value-head corr w/ solver | AZ-vs-solver winrate | Never loses a won game |
 |---|---|---|---|---|---|
-| 3×3 W=1 | p1 win | **100.0 %** | 0.727 | **1.00** | ✅ |
-| 5×5 W=1 | p1 win | **96.7 %** | 0.554 | **0.95** | ✅ |
-| 4×4 W=2 | p0 win | **90.0 %** | 0.511 | **0.90** | ✅ |
+| 3×3 W=1 | p1 win | **100.0 %** (54 pos) | 0.815 | **1.00** | ✅ |
+| 5×5 W=1 | p1 win | **98.3 %** (60 pos) | 0.589 | **0.90** | ✅ |
+| 4×4 W=2 | p0 win | **89.7 %** (58 pos) | 0.535 | **0.95** | ✅ |
 
 Game length contracted toward the optimal race length during training (5×5 W=1:
 ~16→~11 plies; 4×4 W=2: ~18→~14 plies) but — unlike 9×9 — **did not collapse to a
-sub-optimal optimum**: the contraction here *is* near-optimal play (96.7 % / 90 % move
+sub-optimal optimum**: the contraction here *is* near-optimal play (98 % / 90 % move
 agreement), whereas on 9×9 the identical-looking contraction was a failure to discover
 wall tactics.
 
 ## Conclusion
 
 **The AZ pipeline is sound.** On every board where the optimum is reachable within the
-training budget, the pipeline converges to **near-optimal play**: 90–100 % optimal-move
-agreement, 0.90–1.00 win rate as the theoretically-winning side against the solver's
-varied optimal lines, and it **never throws a won position into a loss** on any board.
-Optimal-move agreement decreases gently with wall-tactical density (3×3 100 % → 5×5 W=1
-96.7 % → 4×4 W=2 90 %), the expected difficulty gradient, but convergence holds throughout.
+training budget, the pipeline converges to **near-optimal play**: ~90–100 % optimal-move
+agreement *over non-forced positions*, 0.90–1.00 win rate as the theoretically-winning
+side against the solver's varied optimal lines, and it **never throws a won position into
+a loss** on any board. Optimal-move agreement decreases gently with wall-tactical density
+(3×3 100 % → 5×5 W=1 98 % → 4×4 W=2 90 %), the expected difficulty gradient, but
+convergence holds throughout.
 
 Therefore the degenerate 9×9 result is a **scale / training-budget problem, not a
 pipeline bug**: 9×9 optimal play needs deep wall tactics that the net never discovered
