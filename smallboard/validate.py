@@ -2,7 +2,7 @@ import random
 import numpy as np
 import torch
 
-from smallboard.engine import Engine, Step
+from smallboard.engine import Engine
 from smallboard.encoding import Encoder
 from smallboard.model import SmallNet, NetWrapper
 from smallboard.solver import Solver
@@ -100,35 +100,41 @@ def value_accuracy(net, e, enc, n_positions=40, seed=0):
 
 def az_vs_solver(net, e, enc, games=20, az_sims=80, seed=0):
     """AZ plays the theoretically-winning side vs the perfect solver; also check AZ
-    never loses a position it should win. Returns a metrics dict."""
+    never loses a position it should win. Returns a metrics dict.
+
+    Each game uses its own RNG (seeded from the game index) for AZ's search seed and
+    for choosing among the solver's *optimal* move set, so the `games` trials are
+    distinct trajectories and AZ must beat every optimal solver line (not just one)."""
     sol = Solver(e)
     wrap = NetWrapper(net, e, enc)
     start_val, _ = sol.solve(e.initial_state())
     win_side = 0 if start_val == 1 else (1 if start_val == -1 else None)
 
-    def play(az_player):
+    def play(az_player, g):
+        rng = random.Random(seed + 1009 * g)
         s = e.initial_state()
-        for _ in range(4 * e.N + 4 * e.W + 20):
+        for _ in range(4 * e.N + 4 * e.W + 20):    # safety ply cap; ample for N<=5
             if e.is_terminal(s):
                 break
             if s.turn == az_player:
-                mv, _, _ = PUCTSearch(wrap, sims=az_sims, seed=seed + s.turn).run(s)
+                mv, _, _ = PUCTSearch(wrap, sims=az_sims,
+                                      seed=rng.randrange(1 << 30)).run(s)
             else:
                 _, best = sol.solve(s)
-                mv = best[0] if best else e.legal_moves(s)[0]
+                mv = rng.choice(best) if best else e.legal_moves(s)[0]
             s = e.apply_move(s, mv)
         return e.winner(s)
 
     if win_side is None:                            # drawn start: AZ must not lose
         losses = 0
         for g in range(games):
-            w = play(g % 2)
+            w = play(g % 2, g)
             if w is not None and w != (g % 2):
                 losses += 1
         return {"az_as_winner_winrate": 1.0,        # n/a (draw); report no-loss
                 "az_never_loses_won": 1.0 - losses / games}
 
-    wins = sum(1 for _ in range(games) if play(win_side) == win_side)
+    wins = sum(1 for g in range(games) if play(win_side, g) == win_side)
     return {"az_as_winner_winrate": wins / games, "az_never_loses_won": 1.0}
 
 
