@@ -61,3 +61,50 @@ race memo** (cheap interim version of the tablebase), **horizontal symmetry** (~
 trustworthy Task 9 estimate** — not an optional experiment. The plan's "measure the
 un-optimized solver and extrapolate" assumption does not hold; we must build the core
 optimization first, then measure the optimized solver to project 6×5 / 7×5.
+
+## CRITICAL bugs found by adversarial audit + fixed (2026-06-09)
+
+An adversarial audit found **two CRITICAL exactness bugs**. Both are now fixed and
+gated by exact-repro regression tests (`solver/tests/wall_legality.rs`,
+`solver/tests/race_exactness.rs`). **All measurements in the table above were taken
+with these bugs live and must be treated as pre-fix / untrustworthy** wherever the bug
+could have been exercised.
+
+- **Bug 1 (wall legality, even-width boards):** the floating-wall fast-path in
+  `legal_walls` (`needs_path_check`) skipped the connectivity BFS for walls that were
+  interior and ≥ Chebyshev-2 from every existing wall. Two collinear same-orientation
+  walls whose anchors are Chebyshev-2 apart *along the axis* share a lattice endpoint and
+  form a connected barrier; a "keystone" wall in the gap completes a goal-spanning barrier
+  yet looks "floating" to the predicate, so an **illegal pawn-stranding wall was admitted**.
+  This inverted solver values on even-width boards (e.g. a 6×4 keystone position that is a
+  true first-player **Win** was returned as **Loss**). **Fix:** the fast-path is deleted;
+  `legal_walls` now always runs the two-player `has_path` BFS on every non-overlapping
+  candidate (identical to the brute-force reference).
+
+- **Bug 2 (race endgame, long-path mazes):** `endgame.rs::race_value` used a fixed depth
+  bound `2*(w+h)`. A frozen-wall maze can force a proof line longer than that bound, so the
+  depth-0 floor fired and `race_value` returned a bogus **Draw** — but a wall-less race is
+  provably never a true draw. The wrong Draw escaped into `ab()` and flipped ancestor
+  values, and was order-dependent (reused vs fresh `Solver` disagreed). **Fix:**
+  **iterative-deepening** negamax (no fixed floor) — on the `Loss<Draw<Win` lattice the
+  floor can only ever taint a result up to `Draw` and never flips a true Win/Loss, so the
+  first definitive Win/Loss the deepening yields is exact; clean (full-proof) Win/Loss are
+  memoised and reused across deepening iterations and leaves. A **mandatory panic guard**
+  (`race_value` panics if a wall-less race ever fails to resolve to Win/Loss within the
+  `2*(w*h)^2` hard ceiling) makes a silent wrong Draw impossible.
+
+### Re-validated values after both fixes
+
+| Board | old value (pre-fix) | new value (post-fix) | changed? |
+|---|---|---|---|
+| 6×5 W0 | Loss | **Loss** | no |
+| 6×5 W1 | Loss | **Loss** | no |
+| 6×5 W2 | Loss | **Loss** | no |
+| 5×5 W3 | Loss (75.5 s, **Bug 2 live**) | **timeout** (> 400 s) — not re-confirmable in budget | n/a |
+
+The 6×5 W0/W1/W2 values are unchanged (the keystone bug existed but did not flip these
+specific opening values), and are now trustworthy. 5×5 W3 was computed with Bug 2 live, so
+its earlier "Loss" is **untrustworthy**; post-fix the exact solve no longer completes in the
+time budget (the mandatory BFS-on-every-wall and iterative-deepening race search slow the
+un-optimised solver further), so its trustworthy value awaits the Task-8 optimisations. The
+old 6×5 numbers in the table above predate the fix and should be read with that caveat.
