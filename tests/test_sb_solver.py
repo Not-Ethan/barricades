@@ -93,3 +93,21 @@ def test_solver_exact_value_and_move_set_with_reused_instance():
             s = e.apply_move(s, ms[rng.randrange(len(ms))])
     assert checked > 300
     assert vmis == 0 and setmis == 0, f"value_mismatches={vmis} set_mismatches={setmis}"
+
+
+def test_solver_reproduces_writeup_5x5_2nd_player_win():
+    """The writeup (grantslatton.com/solving-quoridor): 5x5 is a 2nd-player win at
+    <=4 walls per player. The side to move (p0) should therefore LOSE the start
+    position, i.e. value == -1 (p1, the 2nd player, wins).
+
+    DEVIATION FROM PLAN DEFAULT: the design's default 5x5 config is W=2, but the
+    full pure-Python solve of 5x5 W=2 is infeasible (max_depth=30 -> TIMEOUT >90s;
+    depth-limited scaling is ~3-6x per 2 levels, d=8 alone is ~64s). W=1 (which is
+    <=4, so still in the writeup's regime) solves exactly in ~5s and reproduces the
+    same 2nd-player-win result -- the plan's own pre-authorized fallback. A Rust
+    port of Solver._negamax would be needed for the full W=2 solve; W=1 already
+    validates the solver against the writeup on a board with real wall tactics.
+    """
+    e = Engine(5, 1)
+    val, _ = Solver(e).solve(e.initial_state())
+    assert val == -1
