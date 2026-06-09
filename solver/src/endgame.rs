@@ -12,20 +12,24 @@ use crate::state::State;
 use crate::board::Board;
 use rustc_hash::FxHashMap;
 
-/// Exact game value of a wall-less position for the side to move.
+/// Exact game value of a wall-less position for the side to move, paired with
+/// the number of race nodes visited (for profiling; the value is unaffected).
 ///
 /// Depth-bounded negamax over **steps only** (walls are exhausted) with a
 /// `(State, depth)` memo of exact values. The bound `2*(w+h)` is generous
 /// enough that every wall-less race resolves to Win/Loss within it (an upper
 /// bound on the longest sensible race on a `w x h` board), so the depth-0
 /// `Draw` fallback is never the final answer for a reachable race.
-pub fn race_value(b: &Board, s: &State) -> Value {
+pub fn race_value(b: &Board, s: &State) -> (Value, u64) {
     let bound = 2 * (b.w as u32 + b.h as u32);
     let mut memo: FxHashMap<(State, u32), Value> = FxHashMap::default();
-    race_ab(b, s, bound, Value::Loss, Value::Win, &mut memo)
+    let mut nodes: u64 = 0;
+    let v = race_ab(b, s, bound, Value::Loss, Value::Win, &mut memo, &mut nodes);
+    (v, nodes)
 }
 
-/// Alpha-beta negamax over pawn steps only, with an exact-value memo.
+/// Alpha-beta negamax over pawn steps only, with an exact-value memo. `nodes`
+/// accumulates the count of internal nodes entered (profiling only).
 fn race_ab(
     b: &Board,
     s: &State,
@@ -33,7 +37,9 @@ fn race_ab(
     mut alpha: Value,
     beta: Value,
     memo: &mut FxHashMap<(State, u32), Value>,
+    nodes: &mut u64,
 ) -> Value {
+    *nodes += 1;
     // Terminal: `winner` is the player who just moved (= 1 - turn); if that is
     // the side to move it's a Win, else a Loss.
     if let Some(p) = b.winner(s) {
@@ -52,7 +58,7 @@ fn race_ab(
     // Steps only — walls are exhausted in the race endgame.
     for dest in crate::movegen::legal_steps(b, s) {
         let s2 = crate::movegen::apply(b, s, crate::state::Move::Step(dest));
-        let v = race_ab(b, &s2, depth - 1, beta.negate(), alpha.negate(), memo).negate();
+        let v = race_ab(b, &s2, depth - 1, beta.negate(), alpha.negate(), memo, nodes).negate();
         if v > best {
             best = v;
         }

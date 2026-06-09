@@ -71,6 +71,10 @@ pub fn brute_value(b: &Board, s: &State, depth: u32) -> Value {
 pub struct Solver<'a> {
     b: &'a Board,
     tt: FxHashMap<(State, u32), (Value, Flag)>,
+    /// Profiling counter: total internal nodes visited. Counts every `ab(...)`
+    /// entry (main alpha-beta search) plus every wall-less race node entered via
+    /// `race_value`. Instrumentation only — does not affect search results.
+    pub nodes: u64,
 }
 
 impl<'a> Solver<'a> {
@@ -78,7 +82,23 @@ impl<'a> Solver<'a> {
         Solver {
             b,
             tt: FxHashMap::default(),
+            nodes: 0,
         }
+    }
+
+    /// Number of entries currently in the transposition table.
+    pub fn tt_len(&self) -> usize {
+        self.tt.len()
+    }
+
+    /// Rough lower-bound estimate of the transposition table's memory footprint
+    /// in bytes: entry count times the per-entry key+value size
+    /// (`(State, u32)` key plus `(Value, Flag)` value). Ignores `HashMap`
+    /// overhead and load factor, so it under-counts true RSS — it is an estimate
+    /// of the dominant TT memory only, not real resident size.
+    pub fn tt_bytes(&self) -> usize {
+        let per_entry = size_of::<(State, u32)>() + size_of::<(Value, Flag)>();
+        self.tt.len() * per_entry
     }
 
     /// Solve `s` to its game-theoretic value for the side to move.
@@ -105,6 +125,8 @@ impl<'a> Solver<'a> {
     /// Alpha-beta negamax. Returns the value of `s` for the side to move,
     /// fail-soft within the `(alpha, beta)` window.
     fn ab(&mut self, s: &State, depth: u32, mut alpha: Value, mut beta: Value) -> Value {
+        // Profiling: count every internal node entered (instrumentation only).
+        self.nodes += 1;
         // Terminal: `winner` is the player who just moved (= 1 - turn). If that
         // is the side to move it's a Win, otherwise the side to move has lost.
         if let Some(p) = self.b.winner(s) {
@@ -118,7 +140,9 @@ impl<'a> Solver<'a> {
         // is a pure pawn race, solved exactly by its own bounded negamax. No TT
         // interaction needed — `race_value` is self-contained.
         if s.walls_left == [0, 0] {
-            return crate::endgame::race_value(self.b, s);
+            let (v, race_nodes) = crate::endgame::race_value(self.b, s);
+            self.nodes += race_nodes;
+            return v;
         }
 
         let alpha0 = alpha;
