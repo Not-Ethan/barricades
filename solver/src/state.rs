@@ -15,6 +15,14 @@ pub struct State {
     pub turn: u8,
 }
 
+/// A move: either a pawn step to a destination cell index, or a wall
+/// placement at anchor `(wc, wr)` with orientation `horiz`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Move {
+    Step(u8),
+    Wall { wc: u8, wr: u8, horiz: bool },
+}
+
 #[cfg(test)]
 mod tests {
     use crate::board::Board;

@@ -6,7 +6,7 @@ impl Board {
     /// Anchors only exist for `wc ∈ 0..w-1`, `wr ∈ 0..h-1`; out-of-range
     /// coordinates (passed as `i16` to avoid `u8` underflow) are "no wall".
     #[inline]
-    fn h_anchor(&self, s: &State, wc: i16, wr: i16) -> bool {
+    pub(crate) fn h_anchor(&self, s: &State, wc: i16, wr: i16) -> bool {
         if wc < 0 || wr < 0 || wc >= (self.w as i16 - 1) || wr >= (self.h as i16 - 1) {
             return false;
         }
@@ -15,7 +15,7 @@ impl Board {
 
     /// Whether a vertical wall anchor `(wc, wr)` exists and is set in `s`.
     #[inline]
-    fn v_anchor(&self, s: &State, wc: i16, wr: i16) -> bool {
+    pub(crate) fn v_anchor(&self, s: &State, wc: i16, wr: i16) -> bool {
         if wc < 0 || wr < 0 || wc >= (self.w as i16 - 1) || wr >= (self.h as i16 - 1) {
             return false;
         }
@@ -25,7 +25,7 @@ impl Board {
     /// Whether the step from `(c, r)` to the orthogonally-adjacent cell in
     /// direction `(dc, dr)` is blocked by a wall. Mirrors
     /// `smallboard/engine.py::is_blocked` with explicit boundary guards.
-    fn step_blocked(&self, s: &State, c: i16, r: i16, dc: i16, dr: i16) -> bool {
+    pub(crate) fn step_blocked(&self, s: &State, c: i16, r: i16, dc: i16, dr: i16) -> bool {
         if dr == 1 {
             // North: (c,r)->(c,r+1)
             self.h_anchor(s, c, r) || self.h_anchor(s, c - 1, r)
