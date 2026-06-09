@@ -2,14 +2,25 @@
 //!
 //! Usage: `solve <W> <H> <WALLS>` — builds the `W x H` board with `WALLS` walls
 //! per player, solves the initial position to its game-theoretic value, and
-//! prints one line of search statistics (value, nodes visited, transposition
-//! table size, an estimate of the TT memory footprint, and wall-clock time).
+//! prints one line of search statistics (value, threads used, nodes visited,
+//! transposition-table fill, TT memory footprint, race-memo fill, and
+//! wall-clock time).
 //!
-//! The figures drive the RunPod feasibility estimate, so the emphasis is on the
-//! search cost — `nodes` counts every internal node entered by the main
-//! alpha-beta search *and* the wall-less race endgame; `tt_entries` is the live
-//! transposition-table size; `tt_bytes` is a rough lower-bound estimate of the
-//! TT footprint (entry count times the per-entry key+value size), not true RSS.
+//! Environment knobs:
+//!   * `QS_THREADS`  — worker threads for the lazy-SMP search (default
+//!     num_cpus). `QS_THREADS=1` reproduces the single-thread value/behaviour.
+//!   * `QS_TT_MB`    — main transposition-table budget in MiB (default 2048).
+//!   * `QS_RACE_MB`  — bounded race-memo budget in MiB (default 1024); the race
+//!     memo is config-granular LRU and exact, so the cap is value-neutral.
+//!   * `QS_ORDERING=0` / `QS_SYMMETRY=0` — disable ordering / mirror TT
+//!     canonicalization for staged measurement (neither changes the value).
+//!
+//! The parallel value is provably identical to the single-thread value (parallel
+//! alpha-beta over a shared TT is exact). `nodes` counts every internal node
+//! entered by the main alpha-beta search *and* the wall-less race endgame,
+//! SUMMED across all worker threads (so it varies run-to-run with the thread
+//! count; only the VALUE is deterministic). `tt_bytes` is the EXACT resident
+//! heap footprint of the dense TT array (capacity * entry size).
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -68,17 +79,20 @@ fn main() -> ExitCode {
     };
 
     println!(
-        "W×H={}×{} walls={}  value={:?}  nodes={}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  time={:.3}s",
+        "W×H={}×{} walls={}  value={:?}  threads={}  nodes={}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  race_entries={}  race_configs={}  time={:.3}s",
         w,
         h,
         walls,
         value,
+        solver.threads(),
         solver.nodes,
         tt_entries,
         tt_capacity,
         fill_pct,
         tt_bytes,
         Solver::tt_entry_size(),
+        solver.race_tt_len(),
+        solver.race_config_count(),
         elapsed.as_secs_f64(),
     );
 
