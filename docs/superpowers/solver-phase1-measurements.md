@@ -165,3 +165,112 @@ pass labels and caches every pawn pair of a frozen wall config, so 6×5 W2 drops
 the prior code timed out. 6×5 W3 still exceeds the 300 s budget — its bottleneck is the
 with-walls alpha-beta tree (awaiting the remaining Task-8 levers: tablebase reuse across
 wall configs, symmetry, killer/history ordering), not the race endgame.
+
+## Optimized solver — 6×5 wall-count profile (2026-06-09)
+
+**Solver:** `solver/` commit `68a19ac` on `az-bootstrap` (parent `de043ba`). Three
+exactness-preserving optimizations **all active** on top of the trustworthy retrograde
+build:
+
+1. **Retrograde race endgame memo** (`endgame.rs`) — one backward-induction pass labels
+   and caches every `(pawn0,pawn1,turn)` of a frozen wall config into the persistent
+   `race_tt`; later races with the same frozen walls are instant hits.
+2. **Killer + history move ordering** (`solver.rs::ordered_moves`) — ordering key is
+   `(distance, history, killer_rank)` descending; the `d_opp−d_self` distance heuristic
+   stays the **primary** key (making killers primary regressed W2 9.4M→83M nodes), with
+   history/killers as tiebreakers only. Recorded on every beta cutoff.
+3. **Horizontal-mirror TT canonicalization** (`mirror`/`canonical`/`pack_key`) — the main
+   `ab` TT keys on the lexicographically-smaller of `(state, mirror(state))` (no value
+   flip). Cuts main-TT entries (clearest where the main TT dominates: 5×5 W3 TT
+   3.16M→1.64M, nearly halved). `race_tt` left untouched.
+
+Toggles `QS_ORDERING=0` / `QS_SYMMETRY=0` reproduce the pre-optimization baseline exactly.
+
+### 6×5 wall-count profile (Apple M1, 16 GB, single-thread; W≤3 cap 300 s, W4/W5 cap 900 s)
+
+| 6×5 walls | value | nodes | TT entries | time | node blowup vs prev |
+|---|---|---|---|---|---|
+| W0 | **Loss** | 1,393 | 0 | 0.000 s | — |
+| W1 | **Loss** | 348,041 | 1,016 | 0.104 s | 250× |
+| W2 | **Loss** | 6,519,488 | 43,268 | 2.371 s | 18.7× |
+| **W3** | — | — | — | **timeout > 300 s** | ≥ (est. 9–19×) |
+| W4 | — | — | — | not attempted (per protocol: stop escalating once one W times out) | — |
+| W5 | — | — | — | not attempted (same) | — |
+
+**Highest 6×5 W solved on this M1: W2** (Loss, 6.52M nodes, 2.37 s). **First infeasible:
+W3** (> 300 s). Per the escalation protocol, W4/W5 were not attempted once W3 timed out.
+
+**6×5 is a second-player (side-to-move-at-root = Loss) win at every solved wall count
+(W0, W1, W2).** No transition toward a first-player win is observed in the solved range.
+By analogy to the only fully-mapped same-height board, **5×5** — which is `Loss` at W0,
+W1, W2, W3, **and W4** (see below) and is reported in the writeup to flip to a 1st-player
+Win only around W5 — any 6×5 parity transition would be expected at a similarly high wall
+count (≈ W5+), well beyond the W3 frontier reachable here.
+
+### Comparison points (same build, same machine)
+
+| Board | walls | value | nodes | TT entries | time |
+|---|---|---|---|---|---|
+| 5×5 | W2 | **Loss** | 4,418,366 | 33,273 | 1.405 s |
+| 5×5 | W3 | **Loss** | 39,177,717 | 1,636,735 | 27.412 s |
+| 5×5 | W4 | **Loss** | 162,371,218 | 29,821,650 | 470.231 s |
+| 7×5 | W0 | **Loss** | 1,905 | 0 | 0.000 s |
+| 7×5 | W1 | **Loss** | 499,237 | 513 | 0.115 s |
+| 7×5 | W2 | **Loss** | 18,099,091 | 48,916 | 5.311 s |
+
+(Optimized 5×5 W3 = 39.2M nodes / 27.4 s, down from the retrograde-only 56.3M / 56.3 s:
+−30 % nodes, ~2× faster, TT 3.16M→1.64M. 5×5 W4 **does finish** here in 470 s but at a
+~1.0 GB resident TT — the largest in-RAM solve we land on this box.)
+
+### Per-wall blowup factors observed
+
+- **6×5 node blowup:** W0→W1 = **250×** (the jump from a single pure race to the first
+  with-walls tree), W1→W2 = **18.7×**.
+- **5×5 node blowup:** W2→W3 = **8.9×**, W3→W4 = **4.1×** (factors shrink as walls fill
+  the board and legal-wall counts fall). Time/TT blow up faster than nodes at the top:
+  5×5 W3→W4 = **17× time, 18× TT** because the larger TT spills toward RAM limits.
+- **7×5 node blowup:** W1→W2 = **36×** (wider board → more legal walls per ply → steeper
+  per-wall growth than 6×5 at the same wall count; 7×5 W2 = 18.1M already exceeds 6×5 W2 =
+  6.5M).
+
+### Feasibility frontier and bottleneck (honest assessment)
+
+**How far we got toward a complete 6×5 solve:** W0, W1, W2 solved exactly and fast
+(< 2.4 s, all `Loss`). **W3 is the frontier — it does not finish in 300 s on this 16 GB
+M1**, and a complete 6×5 solve needs every wall count up to the (≈W5+) parity transition,
+so we are **roughly 3 wall counts short** of a complete solve.
+
+**The bottleneck is the with-walls alpha-beta tree size colliding with RAM, not the race
+endgame.** Two compounding effects:
+- *Node count:* extrapolating 6×5 W2 (6.5M) by the 5×5 W2→W3 factor (8.9×) gives ~58M
+  nodes; by the 6×5 W1→W2 factor (18.7×) gives ~122M. At the clean 6×5-W2 rate
+  (~2.75M nodes/s) that is only ~21–44 s of pure compute — yet it timed out at > 300 s.
+- *Memory:* the gap is **swap thrashing**. 6×5 W3's main TT would be on the order of
+  5×5 W4's (≈30M entries ≈ 1 GB) or larger; on a 16 GB machine already carrying ~15 GB of
+  other resident/swap load, the working set spills and the effective node rate collapses
+  toward the swap-degraded ~0.35M nodes/s seen at 5×5 W4, pushing W3 past 300 s. The mirror
+  symmetry roughly halves main-TT entries, which is exactly why 5×5 W4 fits in ~1 GB and
+  finishes — but 6×5 W3's footprint still exceeds the headroom available here.
+
+**Levers needed to finish (concrete):**
+- **Cloud / bigger RAM (highest leverage, lowest effort).** A ≥ 64 GB box removes the
+  swap wall outright: at the clean ~2.75M nodes/s rate, 6×5 W3 (~58–122M nodes) is ~20–45 s
+  of compute, and even W4 (another ~4–9× nodes ≈ 0.3–1B nodes, ~3–6 GB TT) becomes a
+  minutes-to-low-hours single-thread run. This is the single change that unblocks W3 today.
+- **k-wall retrograde tablebase** (generalize the t=0/1 race memo to all wall budgets):
+  precompute exact values for full wall configurations bottom-up and have `ab` hit the
+  table instead of recursing. This caps the tree depth that αβ must expand and is the
+  writeup's headline technique; expected order-of-magnitude reduction at every W, and it
+  *also* reduces the memory blowup by replacing a sprawling search TT with a compact table.
+- **Per-config legal-wall table.** Wall legality currently runs a connectivity BFS on
+  every candidate (mandatory since the keystone-bug fix). Precomputing the legal-wall set
+  per reachable config would cut a large constant off every interior node — multiplicative
+  with everything above.
+- **Parallelism (8 M1 cores).** Root/young-brothers parallel αβ or a shared concurrent TT
+  could give ~4–6× wall-clock on this box, but it does **not** address the memory wall (it
+  raises peak RSS); best combined with more RAM, not as a substitute for it.
+
+In short: on this 16 GB M1 the optimized solver cleanly owns 6×5 through **W2** and is
+**memory-bound, not compute-bound, at W3**. The fastest path to a complete 6×5 solve is
+more RAM (cloud) to clear W3–W4 immediately, with the k-wall tablebase as the structural
+fix that would make the full wall ladder tractable.
