@@ -6,6 +6,7 @@
 //! to the three-valued `Value` lattice and the Rust engine.
 
 use crate::board::Board;
+use crate::endgame::RaceTt;
 use crate::state::{Move, State};
 use rustc_hash::FxHashMap;
 
@@ -71,6 +72,15 @@ pub fn brute_value(b: &Board, s: &State, depth: u32) -> Value {
 pub struct Solver<'a> {
     b: &'a Board,
     tt: FxHashMap<(State, u32), (Value, Flag)>,
+    /// PERSISTENT, exact race endgame memo keyed on the bare (walls-frozen)
+    /// `State`. Every entry is the position's exact game-theoretic value, so it
+    /// is sound to reuse across every walls-exhausted leaf within a `solve()`
+    /// call: each distinct wall-less race position is solved exactly once
+    /// instead of being re-derived per leaf. See `endgame.rs` for the soundness
+    /// argument. Survives across `solve()` calls on the same `Solver` (extra
+    /// reuse; values stay valid because the race value is a pure function of
+    /// `State`, independent of the surrounding board's wall count).
+    race_tt: RaceTt,
     /// Profiling counter: total internal nodes visited. Counts every `ab(...)`
     /// entry (main alpha-beta search) plus every wall-less race node entered via
     /// `race_value`. Instrumentation only — does not affect search results.
@@ -82,8 +92,14 @@ impl<'a> Solver<'a> {
         Solver {
             b,
             tt: FxHashMap::default(),
+            race_tt: RaceTt::default(),
             nodes: 0,
         }
+    }
+
+    /// Number of entries currently in the persistent race endgame memo.
+    pub fn race_tt_len(&self) -> usize {
+        self.race_tt.len()
     }
 
     /// Number of entries currently in the transposition table.
@@ -137,10 +153,13 @@ impl<'a> Solver<'a> {
         }
 
         // Race short-circuit: with no walls left for either player the position
-        // is a pure pawn race, solved exactly by its own bounded negamax. No TT
-        // interaction needed — `race_value` is self-contained.
+        // is a pure pawn race, solved exactly by its own bounded negamax. The
+        // race value is a pure, context-free function of `State`, so it is
+        // memoized PERSISTENTLY in `race_tt` across every leaf of this solve —
+        // each distinct race position is solved exactly once instead of being
+        // re-derived per leaf. See `endgame.rs` for the exactness argument.
         if s.walls_left == [0, 0] {
-            let (v, race_nodes) = crate::endgame::race_value(self.b, s);
+            let (v, race_nodes) = crate::endgame::race_value(self.b, s, &mut self.race_tt);
             self.nodes += race_nodes;
             return v;
         }
