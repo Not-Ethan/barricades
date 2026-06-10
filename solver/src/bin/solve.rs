@@ -26,6 +26,10 @@
 //!     attempts, verified certificates compiled to masks, and wall moves
 //!     skipped with zero search; `fp_avg_bits` is the mean footprint size in
 //!     anchor bits over successful extractions.
+//!   * `QS_DSU_WALLS=0` — disable the DSU-on-posts wall-legality fast path
+//!     (provably sound by planar duality, default ON; A/B knob). The
+//!     `dsu_skips` / `dsu_falls` stats count non-overlapping wall candidates
+//!     accepted without a connectivity BFS vs fallen through to the BFS pair.
 //!   * df-pn only: `QS_DFPN_MB` (least-work TT MiB, default 1024), `QS_EPS`
 //!     (1+ε trick, default 0.25), `QS_DFPN_H=0` (disable df-pn+ leaf init),
 //!     `QS_DFPN_LOOP_CAP`, `QS_DFPN_SIM_BUDGET`, `QS_DFPN_FALLBACK_MB`
@@ -75,7 +79,7 @@ fn main() -> ExitCode {
         let env_or = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
         eprintln!(
             "[cfg] board={}x{} walls={} engine={} threads={} tt_mb={} race_mb={} \
-             t4={} footprint={} progress_secs={} pid={}",
+             t4={} footprint={} dsu_walls={} progress_secs={} pid={}",
             w,
             h,
             walls,
@@ -85,6 +89,7 @@ fn main() -> ExitCode {
             env_or("QS_RACE_MB", "1024"),
             env_or("QS_T4", "0"),
             env_or("QS_FOOTPRINT", "0"),
+            env_or("QS_DSU_WALLS", "1"),
             env_or("QS_PROGRESS_SECS", "30"),
             std::process::id(),
         );
@@ -109,11 +114,12 @@ fn main() -> ExitCode {
             Some((base, frac)) => format!("base={base},frac={frac}"),
             None => "off".to_string(),
         };
+        let (dsu_skips, dsu_falls) = quoridor_solver::movegen::dsu_wall_counters();
         println!(
             "W×H={}×{} walls={}  engine=dfpn  widen={}  value={:?}  nodes={}  mid_nodes={}  race_nodes={}  \
              tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  rep_hits={}  twins={}  \
              sims={}  sim_nodes={}  sim_verified={}  fallbacks={} (child={} node={} twin={} root={})  \
-             race_entries={}  time={:.3}s",
+             dsu_skips={dsu_skips}  dsu_falls={dsu_falls}  race_entries={}  time={:.3}s",
             w,
             h,
             walls,
@@ -176,8 +182,9 @@ fn main() -> ExitCode {
     } else {
         0.0
     };
+    let (dsu_skips, dsu_falls) = quoridor_solver::movegen::dsu_wall_counters();
     println!(
-        "W×H={}×{} walls={}  value={:?}  threads={}  nodes={}  t4_fires={}  t4_cutoffs={}  fp_attempts={}  fp_extracted={}  fp_prunes={}  fp_avg_bits={:.1}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  race_entries={}  race_configs={}  time={:.3}s",
+        "W×H={}×{} walls={}  value={:?}  threads={}  nodes={}  t4_fires={}  t4_cutoffs={}  fp_attempts={}  fp_extracted={}  fp_prunes={}  fp_avg_bits={:.1}  dsu_skips={dsu_skips}  dsu_falls={dsu_falls}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  race_entries={}  race_configs={}  time={:.3}s",
         w,
         h,
         walls,
