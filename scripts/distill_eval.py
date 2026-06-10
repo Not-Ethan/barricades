@@ -26,6 +26,13 @@ _SIMS = 100
 _NET = None
 
 
+def _init_worker(ckpt, sims):
+    """ProcessPoolExecutor initializer: set per-worker globals (spawn start method
+    on macOS does not inherit main()'s globals)."""
+    global _CKPT, _SIMS
+    _CKPT, _SIMS = ckpt, sims
+
+
 def _net():
     global _NET
     if _NET is None:
@@ -72,7 +79,8 @@ def main():
     _CKPT, _SIMS = a.ckpt, a.sims
     print(f"distilled net (MCTS sims={a.sims}) vs minimax, {a.games} games/rung:")
     for d in [int(x) for x in a.depths.split(",")]:
-        with ProcessPoolExecutor(max_workers=a.workers) as ex:
+        with ProcessPoolExecutor(max_workers=a.workers,
+                                 initializer=_init_worker, initargs=(a.ckpt, a.sims)) as ex:
             wins = sum(ex.map(play_one, [(d, i) for i in range(a.games)]))
         se = 100 * math.sqrt(0.25 / a.games)
         print(f"  vs minimax-d{d}: {wins}/{a.games} = {100 * wins / a.games:5.1f}% (+-{2 * se:.0f}%)", flush=True)
