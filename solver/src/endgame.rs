@@ -52,7 +52,7 @@
 //!     (plain negamax; `Win > Draw > Loss`), and a non-terminal node with NO
 //!     legal step is a `Loss` for the mover.
 //!
-//! ## Bounded, exact, config-granular LRU memo (thread-safe)
+//! ## Bounded, exact, config-granular LRU memo (sharded, thread-safe)
 //!
 //! The race value of a frozen-wall `State` is a pure, context-free function of
 //! that `State` (pawns + frozen walls + turn, with `walls_left == [0, 0]`). One
@@ -71,18 +71,36 @@
 //! it per-pawn). When inserting a freshly solved config would exceed the cap, we
 //! drop least-recently-used configs whole until back under budget.
 //!
+//! ## Sharding (kill the global-mutex serialization)
+//!
+//! Live profiling of an 8-worker lazy-SMP solve showed the workers serializing
+//! on this cache's previous SINGLE global `Mutex` (`__psynch_mutexwait` 17.8k
+//! samples vs 2.4k of real `race_value` work). The memo is therefore SHARDED,
+//! mirroring the proven `ShardedTt` pattern of the main table (62 samples under
+//! the same profile): a config key `(h_walls, v_walls)` hashes to exactly ONE of
+//! `RACE_SHARDS` shards; each shard owns its own map, its own LRU bookkeeping,
+//! and `1/RACE_SHARDS` of the byte budget, enforced at whole-config granularity
+//! exactly as before. Lookups vastly outnumber inserts, so each shard is an
+//! `RwLock`: reads take the SHARED lock and never block each other, and the LRU
+//! "touch" on a read is a relaxed store of a monotonic per-shard atomic tick
+//! into the config's atomic `last_used` stamp — NO write lock, no list
+//! reordering on the read path. Only inserts/evictions take the write lock, and
+//! eviction consults the atomic stamps to pick its LRU victims.
+//!
 //! EXACTNESS-SAFE: this is a PURE cache. Every stored value is the position's
 //! exact game-theoretic value; a cap-induced miss simply re-runs the cheap
-//! retrograde for that one config and recomputes the identical value. Capping
-//! can NEVER change a returned value — only the work done to obtain it. (The
-//! retrograde labeling is deterministic and context-free, so a re-solve of an
-//! evicted config yields a byte-identical table.)
+//! retrograde for that one config and recomputes the identical value. Capping,
+//! sharding, and the relaxed (approximate-order) LRU stamps can NEVER change a
+//! returned value — only the work done to obtain it. (The retrograde labeling
+//! is deterministic and context-free, so a re-solve of an evicted config yields
+//! a byte-identical table.)
 
 use crate::board::Board;
 use crate::solver::Value;
 use crate::state::State;
 use rustc_hash::FxHashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
 /// Default race-memo budget in MiB when `QS_RACE_MB` is unset/invalid.
 pub const DEFAULT_RACE_MB: usize = 1024;
@@ -114,36 +132,60 @@ fn config_bytes(n: usize) -> usize {
     n.saturating_mul(16).saturating_add(128)
 }
 
-/// Bounded, exact, config-granular LRU race memo with interior mutability so it
-/// can be shared (`&self`) across the parallel search threads. All access goes
-/// through a single `Mutex` guarding the map, the LRU clock, and the byte total.
+/// Number of race-memo shards. 16 (power of two; selection is a mask).
 ///
-/// The mutex is held only for the (fast) map lookups/inserts and eviction
-/// bookkeeping — never across the retrograde computation itself, so contention
-/// stays low: threads compute their retrograde passes in parallel and only
-/// briefly lock to publish/read the result.
+/// Why 16 and not 32: unlike the main `ShardedTt` (32 Mutex shards, where every
+/// PROBE takes an exclusive lock), race reads here take a SHARED `RwLock` read
+/// lock, so readers never block readers regardless of shard count. Shards only
+/// need to (a) spread the rare insert/evict write-lock stalls and (b) split the
+/// cache-line traffic on the per-shard LRU clock atomics. 16 = 2x the 8
+/// lazy-SMP workers already makes a same-shard write collision unlikely, while
+/// keeping each shard's budget slice (`QS_RACE_MB / 16`) twice as coarse as 32
+/// shards would — which matters because eviction is WHOLE-config: coarser
+/// slices retain more configs per shard before evicting at small caps.
+const RACE_SHARDS: usize = 16;
+
+/// Bounded, exact, config-granular LRU race memo, SHARDED by config key, with
+/// interior mutability so it can be shared (`&self`) across the parallel search
+/// threads. Each shard's `RwLock` is held only for the (fast) map lookup or
+/// insert/evict bookkeeping — never across the retrograde computation itself:
+/// threads compute their retrograde passes in parallel and only briefly lock
+/// one shard to publish/read the result.
 pub struct RaceTt {
-    inner: Mutex<Inner>,
+    shards: Vec<Shard>,
+    /// Per-shard byte budget: `QS_RACE_MB` (in bytes) split evenly across
+    /// `RACE_SHARDS`. Each shard enforces its slice independently at
+    /// whole-config granularity.
+    shard_cap_bytes: usize,
 }
 
-struct Inner {
+struct Shard {
+    /// Monotonic per-shard LRU clock. Ticked with a relaxed `fetch_add` on
+    /// every touch (read hit or insert) WITHOUT the write lock; per-shard (not
+    /// global) so readers of different shards never contend on one cache line.
+    /// Relaxed ordering gives an approximate-but-monotonic recency order, which
+    /// is all LRU eviction needs — exactness-neutral by construction.
+    clock: AtomicU64,
+    inner: RwLock<ShardInner>,
+}
+
+struct ShardInner {
     /// Solved config tables keyed by frozen wall layout. Each value carries the
-    /// table plus its last-use LRU stamp and accounted byte size.
+    /// table plus its atomic last-use LRU stamp and accounted byte size.
     configs: FxHashMap<ConfigKey, Slot>,
-    /// Monotonic LRU clock; every touch (hit or insert) stamps the config with
-    /// the next tick. Eviction drops the smallest-stamp (oldest) configs first.
-    clock: u64,
     /// Sum of every resident config's accounted `bytes` (kept in sync on
-    /// insert/evict), compared against `cap_bytes`.
+    /// insert/evict), compared against the shard's budget slice.
     total_bytes: usize,
-    /// Hard budget in bytes (from `QS_RACE_MB`). When `total_bytes` would exceed
-    /// this after an insert, LRU configs are evicted whole until back under it.
-    cap_bytes: usize,
 }
 
 struct Slot {
     table: ConfigTable,
-    last_used: u64,
+    /// Last-touch tick from the shard clock. Written with a RELAXED store under
+    /// the shard's READ lock on every hit (the LRU "touch" needs no write
+    /// lock); read by eviction under the write lock. Races between concurrent
+    /// readers just keep one of several near-identical recent ticks — the
+    /// resulting LRU order is approximate, never the values.
+    last_used: AtomicU64,
     bytes: usize,
 }
 
@@ -159,26 +201,54 @@ impl Default for RaceTt {
 }
 
 impl RaceTt {
-    /// Build a race memo with an explicit cap in MiB (test hook for the
-    /// tiny-cap eviction-stress gate; `Default` funnels `QS_RACE_MB` here).
+    /// Build a race memo with an explicit TOTAL cap in MiB, split evenly across
+    /// the shards (test hook for the tiny-cap eviction-stress gate; `Default`
+    /// funnels `QS_RACE_MB` here).
     pub fn with_cap_mb(mb: usize) -> RaceTt {
         let cap_bytes = mb.max(1).saturating_mul(1024 * 1024);
+        let shard_cap_bytes = (cap_bytes / RACE_SHARDS).max(1);
+        let shards = (0..RACE_SHARDS)
+            .map(|_| Shard {
+                clock: AtomicU64::new(0),
+                inner: RwLock::new(ShardInner {
+                    configs: FxHashMap::default(),
+                    total_bytes: 0,
+                }),
+            })
+            .collect();
         RaceTt {
-            inner: Mutex::new(Inner {
-                configs: FxHashMap::default(),
-                clock: 0,
-                total_bytes: 0,
-                cap_bytes,
-            }),
+            shards,
+            shard_cap_bytes,
         }
     }
 
-    /// Total number of cached pawn-state entries across all resident configs
-    /// (reporting/tests only). Counts entries, not configs, matching the old
-    /// flat-memo semantics so `race_tt_len() > 0` still means "memo populated".
+    /// The shard owning config key `ck`. A splitmix64-style mix of both wall
+    /// words, masked to the (power-of-two) shard count, so every config lives
+    /// in exactly ONE shard and similar wall layouts spread evenly.
+    #[inline]
+    fn shard(&self, ck: ConfigKey) -> &Shard {
+        let mut x = ck
+            .0
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(ck.1.wrapping_mul(0xbf58_476d_1ce4_e5b9));
+        x ^= x >> 30;
+        x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^= x >> 31;
+        &self.shards[(x as usize) & (RACE_SHARDS - 1)]
+    }
+
+    /// Total number of cached pawn-state entries across all resident configs of
+    /// all shards (reporting/tests only). Counts entries, not configs, matching
+    /// the old flat-memo semantics so `race_tt_len() > 0` still means "memo
+    /// populated".
     pub fn len(&self) -> usize {
-        let g = self.inner.lock().expect("race memo mutex poisoned");
-        g.configs.values().map(|s| s.table.len()).sum()
+        self.shards
+            .iter()
+            .map(|sh| {
+                let g = sh.inner.read().expect("race memo shard lock poisoned");
+                g.configs.values().map(|s| s.table.len()).sum::<usize>()
+            })
+            .sum()
     }
 
     /// Whether the memo holds no entries.
@@ -186,69 +256,81 @@ impl RaceTt {
         self.len() == 0
     }
 
-    /// Number of resident (whole) configs (reporting/tests).
+    /// Number of resident (whole) configs across all shards (reporting/tests).
     pub fn config_count(&self) -> usize {
-        self.inner.lock().expect("race memo mutex poisoned").configs.len()
+        self.shards
+            .iter()
+            .map(|sh| {
+                sh.inner
+                    .read()
+                    .expect("race memo shard lock poisoned")
+                    .configs
+                    .len()
+            })
+            .sum()
     }
 
     /// Look up the exact value of race state `s` if its frozen-wall config is
-    /// resident. A hit bumps the config to most-recently-used. Returns `None`
-    /// (a cache miss) when the config is absent — the caller then solves it.
+    /// resident. Takes only the owning shard's READ lock — concurrent lookups
+    /// (the dominant operation) never block each other. A hit bumps the
+    /// config's recency via a relaxed atomic tick store (the LRU "touch"
+    /// without a write lock). Returns `None` (a cache miss) when the config is
+    /// absent — the caller then solves it.
     fn get(&self, s: &State) -> Option<Value> {
-        let mut g = self.inner.lock().expect("race memo mutex poisoned");
         let ck: ConfigKey = (s.h_walls, s.v_walls);
-        let tick = {
-            g.clock += 1;
-            g.clock
-        };
-        let pk = (s.pawn[0], s.pawn[1], s.turn);
-        if let Some(slot) = g.configs.get_mut(&ck) {
-            slot.last_used = tick;
-            slot.table.get(&pk).copied()
-        } else {
-            None
-        }
+        let sh = self.shard(ck);
+        let g = sh.inner.read().expect("race memo shard lock poisoned");
+        let slot = g.configs.get(&ck)?;
+        let tick = sh.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        slot.last_used.store(tick, Ordering::Relaxed);
+        slot.table.get(&(s.pawn[0], s.pawn[1], s.turn)).copied()
     }
 
     /// Insert a freshly solved config table (built by one retrograde pass over
-    /// the frozen maze `ck`). Stamps it most-recently-used, updates the byte
-    /// total, and evicts least-recently-used configs WHOLE until back under the
-    /// cap. Exactness-neutral: this is a pure cache publish.
+    /// the frozen maze `ck`) into its owning shard, under that shard's WRITE
+    /// lock. Stamps it most-recently-used, updates the shard's byte total, and
+    /// evicts the shard's least-recently-used configs WHOLE until back under
+    /// the shard's budget slice. Exactness-neutral: this is a pure cache
+    /// publish.
     fn insert_config(&self, ck: ConfigKey, table: ConfigTable) {
-        let mut g = self.inner.lock().expect("race memo mutex poisoned");
+        let sh = self.shard(ck);
         let bytes = config_bytes(table.len());
-        let tick = {
-            g.clock += 1;
-            g.clock
-        };
+        let tick = sh.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut g = sh.inner.write().expect("race memo shard lock poisoned");
         // If this config was already resident (a concurrent thread solved it
         // too, or a re-solve after eviction), replace it and adjust the total.
+        // The replacement table is byte-identical (deterministic retrograde),
+        // so which copy survives is value-irrelevant.
         if let Some(old) = g.configs.insert(
             ck,
             Slot {
                 table,
-                last_used: tick,
+                last_used: AtomicU64::new(tick),
                 bytes,
             },
         ) {
             g.total_bytes = g.total_bytes.saturating_sub(old.bytes);
         }
         g.total_bytes = g.total_bytes.saturating_add(bytes);
-        Inner::evict_to_cap(&mut g);
+        ShardInner::evict_to_cap(&mut g, self.shard_cap_bytes);
     }
 }
 
-impl Inner {
-    /// Evict least-recently-used configs WHOLE until `total_bytes <= cap_bytes`.
-    /// Never evicts below one config (a single config must always fit so a
-    /// just-solved query can be served — the cap is advisory, exactness-neutral).
-    fn evict_to_cap(g: &mut Inner) {
-        while g.total_bytes > g.cap_bytes && g.configs.len() > 1 {
+impl ShardInner {
+    /// Evict this shard's least-recently-used configs WHOLE until
+    /// `total_bytes <= cap_bytes` (the shard's slice of the budget). Never
+    /// evicts below one config (a single config must always fit so a
+    /// just-solved query can be served — the cap is advisory,
+    /// exactness-neutral). Runs under the shard's write lock, so the relaxed
+    /// loads of the per-config atomic stamps see settled values (no concurrent
+    /// readers hold the lock).
+    fn evict_to_cap(g: &mut ShardInner, cap_bytes: usize) {
+        while g.total_bytes > cap_bytes && g.configs.len() > 1 {
             // Find the config with the smallest last_used stamp (the LRU one).
             let victim = g
                 .configs
                 .iter()
-                .min_by_key(|(_, slot)| slot.last_used)
+                .min_by_key(|(_, slot)| slot.last_used.load(Ordering::Relaxed))
                 .map(|(k, _)| *k);
             match victim {
                 Some(k) => {
@@ -295,8 +377,9 @@ enum Label {
 /// the frozen maze).
 ///
 /// `tt` is taken by shared reference (`&RaceTt`) and uses interior mutability,
-/// so the same memo is shared across the parallel search threads. The mutex is
-/// held only for the brief lookup/publish, never across this retrograde pass.
+/// so the same memo is shared across the parallel search threads. Only the one
+/// shard owning this config is locked, and only for the brief lookup (shared
+/// read lock) or publish (write lock) — never across this retrograde pass.
 pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
     debug_assert_eq!(
         s.walls_left,
@@ -322,53 +405,54 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
 
     // ---- 1. Enumerate the forward-reachable component and build edges. ----
     //
-    // `index[node] = id`; `succ[id]` = successor node ids; `pred[id]` =
-    // predecessor node ids; `succ_remaining[id]` = count of not-yet-WIN
-    // successors (the retrograde "all children are wins" counter).
+    // `index[node] = id`. Successor edges are stored in CSR form — one flat
+    // `succ_edges` arena plus a per-node `(start, end)` range — rather than a
+    // `Vec<u32>` per node: a node's successors are all emitted contiguously
+    // while it is expanded, so the flat layout is natural and removes the
+    // O(nodes) small-Vec allocations that showed up as malloc/free churn in
+    // live profiles of `race_value`. Predecessor edges are built afterwards by
+    // a two-pass counting transpose (also CSR, also O(1) allocations).
     let mut index: FxHashMap<Node, u32> = FxHashMap::default();
     let mut nodes: Vec<Node> = Vec::new();
-    let mut succ: Vec<Vec<u32>> = Vec::new();
-    let mut pred: Vec<Vec<u32>> = Vec::new();
     // Per-node seed label (Win/Loss) if it is a terminal/stuck node, else None.
     let mut seed: Vec<Option<Label>> = Vec::new();
+    // CSR successors: `succ_edges[succ_range[id].0 .. succ_range[id].1]` are
+    // the successor node ids of `id` (set when `id` is expanded; terminal and
+    // stuck nodes keep the empty `(0, 0)` range).
+    let mut succ_edges: Vec<u32> = Vec::new();
+    let mut succ_range: Vec<(u32, u32)> = Vec::new();
 
     let mut visited = 0u64; // profiling: race nodes touched.
 
     // Intern a node, allocating its id + parallel rows on first sight.
     let intern = |nodes: &mut Vec<Node>,
-                      succ: &mut Vec<Vec<u32>>,
-                      pred: &mut Vec<Vec<u32>>,
-                      seed: &mut Vec<Option<Label>>,
-                      index: &mut FxHashMap<Node, u32>,
-                      n: Node|
+                  seed: &mut Vec<Option<Label>>,
+                  succ_range: &mut Vec<(u32, u32)>,
+                  index: &mut FxHashMap<Node, u32>,
+                  n: Node|
      -> u32 {
         if let Some(&id) = index.get(&n) {
             return id;
         }
         let id = nodes.len() as u32;
         nodes.push(n);
-        succ.push(Vec::new());
-        pred.push(Vec::new());
         seed.push(None);
+        succ_range.push((0, 0));
         index.insert(n, id);
         id
     };
 
-    let start = intern(
-        &mut nodes,
-        &mut succ,
-        &mut pred,
-        &mut seed,
-        &mut index,
-        query,
-    );
+    let start = intern(&mut nodes, &mut seed, &mut succ_range, &mut index, query);
 
-    // BFS/DFS the reachable component, recording successor + predecessor edges.
+    // BFS/DFS the reachable component, recording successor edges.
     let mut stack: Vec<u32> = vec![start];
     // `expanded[id]` guards against re-expanding a node (its edges are built
     // exactly once). A node can be interned (as a successor) before it is
     // expanded, so this is separate from membership in `index`.
     let mut expanded: Vec<bool> = vec![false];
+    // Reused step buffer (max 5 destinations) — one allocation for the whole
+    // pass instead of one `Vec` per expanded node.
+    let mut steps: Vec<u8> = Vec::with_capacity(8);
     while let Some(id) = stack.pop() {
         if expanded[id as usize] {
             continue;
@@ -397,7 +481,7 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
             None => {}
         }
 
-        let steps = crate::movegen::legal_steps(b, &work);
+        crate::movegen::legal_steps_into(b, &work, &mut steps);
         if steps.is_empty() {
             // Non-terminal but stuck: a Loss for the mover (matches the solver —
             // a no-step node never improves past the initial Loss).
@@ -406,35 +490,50 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
         }
 
         // Build successor edges. A step moves the mover's pawn and flips turn.
-        for dest in steps {
+        let lo = succ_edges.len() as u32;
+        for &dest in &steps {
             let mut child = node;
             child.pawn[t as usize] = dest;
             child.turn = 1 - t;
-            let cid = intern(
-                &mut nodes,
-                &mut succ,
-                &mut pred,
-                &mut seed,
-                &mut index,
-                child,
-            );
+            let cid = intern(&mut nodes, &mut seed, &mut succ_range, &mut index, child);
             // `expanded` must stay parallel to `nodes`.
             if cid as usize >= expanded.len() {
                 expanded.resize(nodes.len(), false);
             }
-            succ[id as usize].push(cid);
-            pred[cid as usize].push(id);
+            succ_edges.push(cid);
             if !expanded[cid as usize] {
                 stack.push(cid);
             }
         }
+        succ_range[id as usize] = (lo, succ_edges.len() as u32);
     }
 
     let n = nodes.len();
     // `succ_remaining[id]` starts at the successor count; each time a successor
     // is finalized WIN we decrement it. Reaching 0 means ALL successors are WIN
     // -> the node is a LOSS for its mover.
-    let mut succ_remaining: Vec<u32> = succ.iter().map(|v| v.len() as u32).collect();
+    let mut succ_remaining: Vec<u32> = succ_range.iter().map(|&(lo, hi)| hi - lo).collect();
+
+    // Predecessor CSR by counting transpose of the successor edges:
+    // `pred_edges[pred_start[id] .. pred_start[id + 1]]` are the predecessor
+    // node ids of `id`. Exactly the same edge multiset the per-node `Vec`s
+    // held before, in flat form.
+    let mut pred_start: Vec<u32> = vec![0; n + 1];
+    for &c in &succ_edges {
+        pred_start[c as usize + 1] += 1;
+    }
+    for i in 0..n {
+        pred_start[i + 1] += pred_start[i];
+    }
+    let mut pred_edges: Vec<u32> = vec![0; succ_edges.len()];
+    let mut cursor: Vec<u32> = pred_start[..n].to_vec();
+    for (id, &(lo, hi)) in succ_range.iter().enumerate() {
+        for &c in &succ_edges[lo as usize..hi as usize] {
+            let slot = cursor[c as usize] as usize;
+            pred_edges[slot] = id as u32;
+            cursor[c as usize] += 1;
+        }
+    }
 
     // ---- 2. Initialize the worklist from seeded terminal/stuck nodes. ----
     let mut label: Vec<Option<Label>> = vec![None; n];
@@ -457,23 +556,21 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
     while qi < queue.len() {
         let id = queue[qi] as usize;
         qi += 1;
+        let preds = &pred_edges[pred_start[id] as usize..pred_start[id + 1] as usize];
         match label[id].expect("queued node must be labeled") {
             Label::Loss => {
                 // Predecessors become WIN.
-                let preds = std::mem::take(&mut pred[id]);
-                for &p in &preds {
+                for &p in preds {
                     let p = p as usize;
                     if label[p].is_none() {
                         label[p] = Some(Label::Win);
                         queue.push(p as u32);
                     }
                 }
-                pred[id] = preds;
             }
             Label::Win => {
                 // Each predecessor loses one not-yet-WIN successor.
-                let preds = std::mem::take(&mut pred[id]);
-                for &p in &preds {
+                for &p in preds {
                     let p = p as usize;
                     if label[p].is_some() {
                         continue;
@@ -484,7 +581,6 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
                         queue.push(p as u32);
                     }
                 }
-                pred[id] = preds;
             }
         }
     }

@@ -58,3 +58,50 @@ fn race_cap_neutral_6x5_w2() {
          (race-memo eviction is NOT value-neutral — bug in the LRU cache)"
     );
 }
+
+/// Tiny-SHARD eviction stress + reused-vs-fresh equality.
+///
+/// The race memo is sharded (16 shards, per-shard budget slice, per-shard
+/// whole-config LRU via atomic last-used ticks). A 1 MiB TOTAL cap leaves each
+/// shard only ~64 KiB — a handful of configs — so every shard evicts heavily
+/// and concurrently under the default multi-thread worker count. This gate
+/// pins, against a fresh LARGE-cap solver (no eviction):
+///
+///   1. the tiny-shard-cap value (fresh solver), and
+///   2. the value from RE-solving with the SAME tiny-cap solver (reused,
+///      warm-but-heavily-evicted shard state: post-eviction maps, advanced
+///      LRU clocks, surviving resident configs).
+///
+/// Any difference would mean per-shard eviction or the atomic-tick LRU is
+/// dropping/corrupting live information rather than acting as a pure cache;
+/// fix the cache, never weaken this gate.
+fn assert_tiny_shard_stress(w: u8, h: u8, walls: u8) {
+    let large = solve_with_race_cap(w, h, walls, 4096);
+
+    let b = Board::new(w, h, walls);
+    let mut sol = Solver::new(&b);
+    sol.set_race_cap_mb(1); // ~64 KiB per shard: heavy per-shard eviction.
+    let fresh = sol.solve(&b.initial());
+    assert_eq!(
+        fresh, large,
+        "{w}x{h} W{walls}: tiny-shard-cap value {fresh:?} != large-cap value \
+         {large:?} (per-shard race eviction is NOT value-neutral)"
+    );
+
+    let reused = sol.solve(&b.initial());
+    assert_eq!(
+        reused, large,
+        "{w}x{h} W{walls}: REUSED tiny-shard-cap solver value {reused:?} != \
+         large-cap value {large:?} (post-eviction shard state is NOT value-neutral)"
+    );
+}
+
+#[test]
+fn race_cap_tiny_shard_stress_5x5_w2() {
+    assert_tiny_shard_stress(5, 5, 2);
+}
+
+#[test]
+fn race_cap_tiny_shard_stress_6x5_w2() {
+    assert_tiny_shard_stress(6, 5, 2);
+}

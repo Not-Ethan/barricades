@@ -52,12 +52,24 @@ fn blocked(b: &Board, s: &State, c: i16, r: i16, dc: i16, dr: i16) -> bool {
 
 /// Legal pawn-step destination cell indices. Mirrors `Engine.legal_steps`.
 pub fn legal_steps(b: &Board, s: &State) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(5);
+    legal_steps_into(b, s, &mut out);
+    out
+}
+
+/// `legal_steps` into a caller-owned buffer (cleared first). Allocation-free
+/// once `out` has capacity (at most 5 destinations: 3 plain steps + up to 2
+/// diagonal jumps), so hot loops — e.g. the race retrograde, which calls this
+/// once per pawn-pair node — can reuse one buffer instead of allocating a
+/// fresh `Vec` per call (visible malloc churn in live profiles). Identical
+/// results to `legal_steps` by construction (it IS the same body).
+pub fn legal_steps_into(b: &Board, s: &State, out: &mut Vec<u8>) {
+    out.clear();
     let (mc, mr) = b.cr(s.pawn[s.turn as usize]);
     let (oc, or) = b.cr(s.pawn[(1 - s.turn) as usize]);
     let (mc, mr) = (mc as i16, mr as i16);
     let (oc, or) = (oc as i16, or as i16);
 
-    let mut out: Vec<u8> = Vec::with_capacity(5);
     for &(dx, dy) in &DIRS {
         let (ac, ar) = (mc + dx, mr + dy);
         if !on_board(b, ac, ar) || blocked(b, s, mc, mr, dx, dy) {
@@ -84,7 +96,6 @@ pub fn legal_steps(b: &Board, s: &State) -> Vec<u8> {
             }
         }
     }
-    out
 }
 
 /// Whether placing a wall at anchor `(wc, wr)` with orientation `horiz` would
