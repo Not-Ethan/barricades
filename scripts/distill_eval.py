@@ -23,20 +23,22 @@ from agents.az.model import QuoridorNet
 
 _CKPT = None
 _SIMS = 100
+_CH = 32
+_BL = 3
 _NET = None
 
 
-def _init_worker(ckpt, sims):
+def _init_worker(ckpt, sims, ch, bl):
     """ProcessPoolExecutor initializer: set per-worker globals (spawn start method
     on macOS does not inherit main()'s globals)."""
-    global _CKPT, _SIMS
-    _CKPT, _SIMS = ckpt, sims
+    global _CKPT, _SIMS, _CH, _BL
+    _CKPT, _SIMS, _CH, _BL = ckpt, sims, ch, bl
 
 
 def _net():
     global _NET
     if _NET is None:
-        n = QuoridorNet(32, 3)
+        n = QuoridorNet(_CH, _BL)
         n.load_state_dict(torch.load(_CKPT, map_location="cpu"), strict=False)
         _NET = n.eval()
     return _NET
@@ -74,13 +76,15 @@ def main():
     ap.add_argument("--games", type=int, default=16)
     ap.add_argument("--sims", type=int, default=100)
     ap.add_argument("--depths", default="3,4,5")
+    ap.add_argument("--channels", type=int, default=32)
+    ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     a = ap.parse_args()
     _CKPT, _SIMS = a.ckpt, a.sims
-    print(f"distilled net (MCTS sims={a.sims}) vs minimax, {a.games} games/rung:")
+    print(f"distilled net ({a.channels}ch/{a.blocks}b, MCTS sims={a.sims}) vs minimax, {a.games} games/rung:")
     for d in [int(x) for x in a.depths.split(",")]:
-        with ProcessPoolExecutor(max_workers=a.workers,
-                                 initializer=_init_worker, initargs=(a.ckpt, a.sims)) as ex:
+        with ProcessPoolExecutor(max_workers=a.workers, initializer=_init_worker,
+                                 initargs=(a.ckpt, a.sims, a.channels, a.blocks)) as ex:
             wins = sum(ex.map(play_one, [(d, i) for i in range(a.games)]))
         se = 100 * math.sqrt(0.25 / a.games)
         print(f"  vs minimax-d{d}: {wins}/{a.games} = {100 * wins / a.games:5.1f}% (+-{2 * se:.0f}%)", flush=True)
