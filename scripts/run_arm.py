@@ -39,14 +39,11 @@ def main():
     arm = sys.argv[1].upper()
     device = sys.argv[2] if len(sys.argv) > 2 else "cuda"
     cfg = ARMS[arm]
-    if cfg["opponent"] == "pool":
-        raise NotImplementedError(
-            f"arm {arm} uses the opponent pool; scripts/selfplay_pool.py not wired yet")
     out_dir = f"models/arm_{arm}"
     print(f"=== ARM {arm}: reward={cfg['reward_mode']} opponent={cfg['opponent']} "
           f"device={device} -> {out_dir} ===", flush=True)
     run_campaign(device=device, out_dir=out_dir, reward_mode=cfg["reward_mode"],
-                 seed=cfg["seed"], **COMMON)
+                 opponent=cfg["opponent"], seed=cfg["seed"], **COMMON)
     print(f"=== ARM {arm} DONE ===", flush=True)
 
 

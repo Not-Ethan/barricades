@@ -20,6 +20,21 @@ from agents.az.model import QuoridorNet
 from agents.az.train import form_dense_targets, train_minibatched, save_checkpoint, augment_lr
 from agents.az.diagnostics import policy_diagnostics
 from scripts.selfplay_native import run_selfplay
+from scripts.selfplay_pool import run_selfplay_pool
+
+
+def _load_pool(out_dir, it, pool_size, channels, blocks, device):
+    """Load up to `pool_size` most-recent past checkpoints as frozen opponent nets.
+    Empty before any checkpoint exists (iteration 0) -> pool self-play falls back to
+    ordinary self-play until the pool fills."""
+    paths = [os.path.join(out_dir, f"campaign_it{i}.pt") for i in range(it)]
+    paths = [p for p in paths if os.path.exists(p)][-pool_size:]
+    nets = []
+    for p in paths:
+        n = QuoridorNet(channels=channels, blocks=blocks)
+        n.load_state_dict(torch.load(p, map_location="cpu"), strict=False)
+        nets.append(n.to(device).eval())
+    return nets
 
 
 def anneal_lambda(it, iterations, warmup_frac=0.6):
@@ -41,10 +56,15 @@ def _make_opponent(opponent, seed):
     raise ValueError(f"unknown opponent: {opponent}")
 
 
-def winrate_vs(net, device, opponent="greedy", sims=60, games=10):
+def winrate_vs(net, device, opponent="greedy", sims=40, games=10, eval_max_plies=160):
     """Win fraction of the net-driven MCTS vs a baseline (random|greedy|minimax),
     alternating colors. Greedy/minimax are stronger yardsticks than random for
-    Quoridor (they force the net to actually use walls, not just advance)."""
+    Quoridor (they force the net to actually use walls, not just advance).
+
+    eval_max_plies caps each game: a weak early net can otherwise drag games to
+    hundreds of plies, and with a time-budgeted minimax that makes per-iteration
+    eval dominate the whole run. Real games are well under this; a capped (drawn)
+    game just counts as a non-win, which is the right signal for a flailing net."""
     from agents.native_agent import NativeMctsAgent
     from core.state import initial_state
     from core.rules import apply_move, is_terminal, winner
@@ -65,7 +85,7 @@ def winrate_vs(net, device, opponent="greedy", sims=60, games=10):
         b = _make_opponent(opponent, seed=1000 + g)
         players = (a, b) if g % 2 == 0 else (b, a)
         s = initial_state()
-        for _ in range(400):
+        for _ in range(eval_max_plies):
             if is_terminal(s):
                 break
             s = apply_move(s, players[s.turn].select_move(s))
@@ -79,7 +99,8 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
                  max_plies=80, epochs=4, lr=1e-3, device="mps", seed=0,
                  channels=32, blocks=3, init_ckpt=None, out_dir="models",
                  eval_games=10, eval_opponent="greedy", warmup_frac=0.8,
-                 reward_mode="dense", eval_every=1, log=print):
+                 reward_mode="dense", eval_every=1, opponent="self",
+                 pool_frac=0.5, pool_size=4, log=print):
     # Tip: keep n_games < games_per_iter so the pool refills and MPS batches stay
     # full (n_games == games_per_iter means no refill -> the batch decays in the
     # tail as games finish, cutting throughput).
@@ -97,9 +118,16 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
     history = []
     for it in range(iterations):
         lam = 1.0 if reward_mode == "outcome" else anneal_lambda(it, iterations, warmup_frac)
-        examples, st = run_selfplay(total_games=games_per_iter, n_games=n_games,
-                                    sims=sims, device=device, net=net, seed=seed + it * 2,
-                                    max_plies=max_plies)
+        if opponent == "pool":
+            opp_nets = _load_pool(out_dir, it, pool_size, channels, blocks, device)
+            examples, st = run_selfplay_pool(
+                total_games=games_per_iter, n_games=n_games, sims=sims, device=device,
+                learner_net=net, opponent_nets=opp_nets, pool_frac=pool_frac,
+                seed=seed + it * 2, max_plies=max_plies)
+        else:
+            examples, st = run_selfplay(total_games=games_per_iter, n_games=n_games,
+                                        sims=sims, device=device, net=net, seed=seed + it * 2,
+                                        max_plies=max_plies)
         # Mechanism diagnostics on the RAW self-play examples (before augmentation):
         # wall_mass / entropy expose whether the policy prior collapses off walls.
         diag = policy_diagnostics(examples)
