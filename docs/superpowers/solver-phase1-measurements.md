@@ -518,3 +518,9 @@ through W6 — tempo dominance holds; no 4×7-style oscillation.
 550K entries — at a 16-wall budget the search is almost pure wall-labyrinth;
 races barely occur before resolution. Node plateau holds (W5–W8: 38.2/40.0/
 28.8/32.4 B). **Ladder: P2 at W0–W3 | P1 at W4–W8.**
+
+## 6×5 W9 = FIRST-PLAYER WIN (2026-06-10, RunPod)
+
+`solve 6 5 9`: value=Win, 31,520,702,751 nodes, 5,870 s. Race cache: 946
+entries / 218 configs — the race endgame is virtually extinct at this budget.
+**Ladder: P2 at W0–W3 | P1 at W4–W9.** One rung (W10) from the complete board.
