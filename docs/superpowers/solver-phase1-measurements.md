@@ -511,3 +511,10 @@ TT saturated (100% of 16 GiB) — rate halved in the tail; W7+ relaunched with a
 
 **6×5 ladder: W0–W3 = P2 win | W4–W6 = P1 win.** Transition at W4 is monotone
 through W6 — tempo dominance holds; no 4×7-style oscillation.
+
+## 6×5 W8 = FIRST-PLAYER WIN (2026-06-10, RunPod)
+
+`solve 6 5 8`: value=Win, 32,412,759,639 nodes, 6,091 s. Race cache held only
+550K entries — at a 16-wall budget the search is almost pure wall-labyrinth;
+races barely occur before resolution. Node plateau holds (W5–W8: 38.2/40.0/
+28.8/32.4 B). **Ladder: P2 at W0–W3 | P1 at W4–W8.**
