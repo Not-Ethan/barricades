@@ -28,6 +28,7 @@
 //! component and it falls to the BFS. Gated by set-equality vs brute force
 //! (`tests/dsu_walls.rs`).
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -282,6 +283,153 @@ impl PostDsu {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SHADOW legality-filter benchmark (instrumentation ONLY — zero behavior
+// change). Alongside every DSU decision in `walls_dsu`, the WRITEUP's
+// legality-filter predicate is EVALUATED (never acted on) so a production run
+// doubles as the writeup-vs-DSU benchmark. Per-candidate tallies are bucketed
+// by the total number of placed walls and accumulated in a THREAD-LOCAL tally
+// (no hot-path shared atomics); workers drain their thread's tally at join
+// via `take_shadow_tally`. `QS_SHADOW=0` disables the shadow evaluation
+// entirely (zero-cost path).
+//
+// WRITEUP PREDICATE READING (fixed for the benchmark): the writeup says a
+// candidate "needs check iff the wall touches the board border OR contacts
+// existing walls at >= 2 of its three posts". Implemented faithfully on the
+// post lattice as:
+//   (a) BORDER: any of the candidate's 3 posts is a border post
+//       (pc in {0, w} or pr in {0, h});
+//   (b) CONTACT: at least 2 of the candidate's 3 posts COINCIDE with posts
+//       occupied by existing walls, where occupied = the post belongs to
+//       some placed wall's 3-post span (extreme AND center posts).
+// Ambiguity resolutions (documented and kept fixed):
+//   * "touches the border" is read on POSTS: a candidate triggers (a) iff one
+//     of its 3 posts lies ON the border lattice line, not merely near it.
+//   * "contacts" is read as post COINCIDENCE, not post adjacency: wall
+//     segments connect in the dual lattice only through shared posts, so a
+//     candidate post one lattice step away from an occupied post is NOT a
+//     contact.
+//   * the ">= 2" count is over the candidate's 3 DISTINCT posts — each post
+//     contributes at most 1 regardless of how many placed walls occupy it.
+// ---------------------------------------------------------------------------
+
+/// Wall-density buckets: bucket = total placed walls = `2W - walls_left[0] -
+/// walls_left[1]`, range `0..=2W`. `walls_left` fields are 4 bits everywhere
+/// (`pack_u128`), so `W <= 15` and `2W <= 30` -> 31 buckets suffice.
+pub const SHADOW_BUCKETS: usize = 31;
+
+/// One bucket's shadow-benchmark counters (all per-candidate unless noted).
+#[derive(Clone, Copy, Default)]
+pub struct ShadowRow {
+    /// Non-overlapping wall candidates examined.
+    pub candidates: u64,
+    /// Candidates the DSU fast path accepted without a BFS.
+    pub dsu_skip: u64,
+    /// Candidates that fell through to the BFS pair (BFS actually run).
+    pub dsu_fall: u64,
+    /// Candidates the WRITEUP predicate would have accepted without a BFS.
+    pub wu_skip: u64,
+    /// Candidates the WRITEUP predicate would have sent to the BFS.
+    pub wu_fall: u64,
+    /// DSU `find` invocations (op accounting for the overhead calculation).
+    pub dsu_finds: u64,
+    /// DSU `union` invocations (op accounting for the overhead calculation).
+    pub dsu_unions: u64,
+}
+
+impl ShadowRow {
+    fn add(&mut self, o: &ShadowRow) {
+        self.candidates += o.candidates;
+        self.dsu_skip += o.dsu_skip;
+        self.dsu_fall += o.dsu_fall;
+        self.wu_skip += o.wu_skip;
+        self.wu_fall += o.wu_fall;
+        self.dsu_finds += o.dsu_finds;
+        self.dsu_unions += o.dsu_unions;
+    }
+}
+
+/// Per-bucket shadow-benchmark tally (bucket = total placed walls).
+#[derive(Clone, Copy, Default)]
+pub struct ShadowTally {
+    pub rows: [ShadowRow; SHADOW_BUCKETS],
+}
+
+impl ShadowTally {
+    /// Sum another tally into this one (used at worker join).
+    pub fn merge(&mut self, other: &ShadowTally) {
+        for (a, b) in self.rows.iter_mut().zip(other.rows.iter()) {
+            a.add(b);
+        }
+    }
+}
+
+thread_local! {
+    /// This thread's accumulated shadow tally. Thread-local by design: the
+    /// hot path (`walls_dsu`) touches no shared state; lazy-SMP workers run
+    /// on dedicated scoped threads and drain their tally once at join.
+    static SHADOW_TL: RefCell<ShadowTally> = const { RefCell::new(ShadowTally {
+        rows: [ShadowRow {
+            candidates: 0, dsu_skip: 0, dsu_fall: 0, wu_skip: 0, wu_fall: 0,
+            dsu_finds: 0, dsu_unions: 0,
+        }; SHADOW_BUCKETS],
+    }) };
+}
+
+/// Drain the CALLING thread's shadow tally (resets it to zero). Lazy-SMP
+/// workers call this once after their root search completes; the sums are
+/// merged into the `Solver`'s tally at join.
+pub fn take_shadow_tally() -> ShadowTally {
+    SHADOW_TL.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
+/// Whether the shadow legality-filter benchmark is enabled (`QS_SHADOW`,
+/// default ON; `=0` disables — zero-cost path). Read once per process.
+fn shadow_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("QS_SHADOW")
+            .map(|v| v.trim() != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Occupied-post bitset for the shadow predicate: bit `pr*(w+1)+pc` is set
+/// iff post `(pc, pr)` belongs to some placed wall's 3-post span. 81 posts
+/// max (8x8 boards) fits a `u128`.
+fn occupied_posts(b: &Board, s: &State) -> u128 {
+    let pw = b.w as u32 + 1; // posts per row
+    let aw = b.w - 1; // anchors per row
+    let mut occ = 0u128;
+    for (bits, horiz) in [(s.h_walls, true), (s.v_walls, false)] {
+        let mut bits = bits;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as u8;
+            bits &= bits - 1;
+            let (wc, wr) = (i % aw, i / aw);
+            for (pc, pr) in wall_posts(wc, wr, horiz) {
+                occ |= 1u128 << (pr as u32 * pw + pc as u32);
+            }
+        }
+    }
+    occ
+}
+
+/// SHADOW ONLY: the writeup predicate (see the module-level reading above) —
+/// would the writeup's legality filter send this candidate to the BFS?
+/// Evaluated, never acted on.
+fn writeup_needs_bfs(b: &Board, occ: u128, wc: u8, wr: u8, horiz: bool) -> bool {
+    let pw = b.w as u32 + 1;
+    let mut occ_hits = 0u32;
+    for (pc, pr) in wall_posts(wc, wr, horiz) {
+        if pc == 0 || pc == b.w || pr == 0 || pr == b.h {
+            return true; // (a) border post
+        }
+        occ_hits += (occ >> (pr as u32 * pw + pc as u32) & 1) as u32;
+    }
+    occ_hits >= 2 // (b) >= 2 posts coincide with occupied posts
+}
+
 /// Whether the DSU fast path is enabled (`QS_DSU_WALLS`, default ON; `=0`
 /// disables for A/B). Read once per process.
 fn dsu_enabled() -> bool {
@@ -343,18 +491,35 @@ pub fn legal_walls_bruteforce(b: &Board, s: &State) -> Vec<Move> {
 /// `legal_walls` with the DSU-on-posts fast path. Same candidate iteration
 /// order as `walls_inner`, so the returned ordering is identical; only the
 /// per-candidate BFS is (soundly) skipped when the wall closes no curve.
+///
+/// SHADOW BENCHMARK (instrumentation only): when `QS_SHADOW` is on, every
+/// non-overlapping candidate ALSO evaluates the writeup predicate
+/// (`writeup_needs_bfs`) — the result is tallied, never acted on, so the
+/// generated move set is bit-identical with the shadow on or off.
 fn walls_dsu(b: &Board, s: &State) -> Vec<Move> {
     if s.walls_left[s.turn as usize] == 0 {
         return Vec::new();
     }
     let mut dsu = PostDsu::build(b, s);
     let (mut skips, mut falls) = (0u64, 0u64);
+    // Shadow state: `Some(occupied-post bitset)` when the benchmark is on.
+    let shadow = shadow_enabled().then(|| occupied_posts(b, s));
+    let mut row = ShadowRow::default();
     let mut out: Vec<Move> = Vec::new();
     for &horiz in &[true, false] {
         for wc in 0..b.w - 1 {
             for wr in 0..b.h - 1 {
                 if overlaps(b, s, wc, wr, horiz) {
                     continue;
+                }
+                if let Some(occ) = shadow {
+                    // EVALUATE (do not act on) the writeup predicate.
+                    row.candidates += 1;
+                    if writeup_needs_bfs(b, occ, wc, wr, horiz) {
+                        row.wu_fall += 1;
+                    } else {
+                        row.wu_skip += 1;
+                    }
                 }
                 if dsu.closes_no_curve(wc, wr, horiz) {
                     // Provably cannot disconnect anything: skip the BFS.
@@ -370,6 +535,26 @@ fn walls_dsu(b: &Board, s: &State) -> Vec<Move> {
                 }
             }
         }
+    }
+    if shadow.is_some() {
+        row.dsu_skip = skips;
+        row.dsu_fall = falls;
+        // DSU op accounting, exact by CALL-SITE arithmetic (this function is
+        // the only DSU user here): `PostDsu::build` issues `2*(pw+ph)` border
+        // unions plus 2 unions per placed wall; every `union` performs 2
+        // `find`s; every `closes_no_curve` performs 3 `find`s and is called
+        // once per non-overlapping candidate.
+        let pw = b.w as u64 + 1;
+        let ph = b.h as u64 + 1;
+        let placed = (s.h_walls.count_ones() + s.v_walls.count_ones()) as u64;
+        row.dsu_unions = 2 * (pw + ph) + 2 * placed;
+        row.dsu_finds = 2 * row.dsu_unions + 3 * row.candidates;
+        // Bucket by total placed walls (the state's density), clamped
+        // defensively for synthetic test states.
+        let bucket = (2 * b.walls as usize)
+            .saturating_sub(s.walls_left[0] as usize + s.walls_left[1] as usize)
+            .min(SHADOW_BUCKETS - 1);
+        SHADOW_TL.with(|t| t.borrow_mut().rows[bucket].add(&row));
     }
     DSU_SKIPS.fetch_add(skips, Ordering::Relaxed);
     DSU_BFS_FALLS.fetch_add(falls, Ordering::Relaxed);

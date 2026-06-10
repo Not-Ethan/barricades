@@ -30,6 +30,11 @@
 //!     (provably sound by planar duality, default ON; A/B knob). The
 //!     `dsu_skips` / `dsu_falls` stats count non-overlapping wall candidates
 //!     accepted without a connectivity BFS vs fallen through to the BFS pair.
+//!   * `QS_SHADOW=0` — disable the shadow legality-filter benchmark (default
+//!     ON). When on, every non-overlapping wall candidate in the DSU path
+//!     ALSO evaluates (never acts on) the writeup's border/two-post-contact
+//!     predicate; the per-placed-walls-bucket table is printed to stderr
+//!     after the result line. Instrumentation only — zero behavior change.
 //!   * df-pn only: `QS_DFPN_MB` (least-work TT MiB, default 1024), `QS_EPS`
 //!     (1+ε trick, default 0.25), `QS_DFPN_H=0` (disable df-pn+ leaf init),
 //!     `QS_DFPN_LOOP_CAP`, `QS_DFPN_SIM_BUDGET`, `QS_DFPN_FALLBACK_MB`
@@ -79,7 +84,7 @@ fn main() -> ExitCode {
         let env_or = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
         eprintln!(
             "[cfg] board={}x{} walls={} engine={} threads={} tt_mb={} race_mb={} \
-             t4={} footprint={} dsu_walls={} progress_secs={} pid={}",
+             t4={} footprint={} dsu_walls={} shadow={} progress_secs={} pid={}",
             w,
             h,
             walls,
@@ -90,6 +95,7 @@ fn main() -> ExitCode {
             env_or("QS_T4", "0"),
             env_or("QS_FOOTPRINT", "0"),
             env_or("QS_DSU_WALLS", "1"),
+            env_or("QS_SHADOW", "1"),
             env_or("QS_PROGRESS_SECS", "30"),
             std::process::id(),
         );
@@ -206,6 +212,47 @@ fn main() -> ExitCode {
         solver.race_config_count(),
         elapsed.as_secs_f64(),
     );
+
+    // Shadow legality-filter benchmark table (writeup-vs-DSU), one row per
+    // placed-walls bucket. Instrumentation only (`QS_SHADOW=0` disables and
+    // suppresses the table); printed to STDERR after the result line so the
+    // one-line stdout result stays machine-parseable. Self-consistency:
+    // candidates == dsu_skip + dsu_fall == wu_skip + wu_fall per row.
+    {
+        let sh = &solver.shadow;
+        if sh.rows.iter().any(|r| r.candidates != 0) {
+            eprintln!(
+                "[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls"
+            );
+            eprintln!(
+                "[shadow] {:>6} {:>14} {:>14} {:>12} {:>14} {:>12} {:>15} {:>12}",
+                "bucket",
+                "candidates",
+                "dsu_skip",
+                "dsu_fall",
+                "wu_skip",
+                "wu_fall",
+                "dsu_finds",
+                "dsu_unions"
+            );
+            for (bucket, r) in sh.rows.iter().enumerate() {
+                if r.candidates == 0 {
+                    continue;
+                }
+                eprintln!(
+                    "[shadow] {:>6} {:>14} {:>14} {:>12} {:>14} {:>12} {:>15} {:>12}",
+                    bucket,
+                    r.candidates,
+                    r.dsu_skip,
+                    r.dsu_fall,
+                    r.wu_skip,
+                    r.wu_fall,
+                    r.dsu_finds,
+                    r.dsu_unions
+                );
+            }
+        }
+    }
 
     ExitCode::SUCCESS
 }

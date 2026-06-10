@@ -558,6 +558,13 @@ pub struct Solver<'a> {
     /// extractions (average footprint size = `fp_mask_bits / fp_extractions`).
     /// Instrumentation only.
     pub fp_mask_bits: u64,
+    /// Shadow legality-filter benchmark tally (writeup-vs-DSU, per
+    /// placed-walls bucket; see `movegen::ShadowTally`), summed across the
+    /// worker threads of the last `solve`. Workers accumulate THREAD-LOCAL
+    /// tallies inside `movegen::walls_dsu` and drain them once at join — no
+    /// hot-path shared atomics. Instrumentation only; `QS_SHADOW=0` disables
+    /// the underlying evaluation entirely (all-zero tally).
+    pub shadow: crate::movegen::ShadowTally,
 }
 
 /// One worker thread's search context for the lazy-SMP solve. Holds shared
@@ -909,6 +916,7 @@ impl<'a> Solver<'a> {
             fp_extractions: 0,
             fp_prunes: 0,
             fp_mask_bits: 0,
+            shadow: crate::movegen::ShadowTally::default(),
         }
     }
 
@@ -1054,6 +1062,11 @@ impl<'a> Solver<'a> {
         let total_fp_extractions = AtomicU64::new(0);
         let total_fp_prunes = AtomicU64::new(0);
         let total_fp_mask_bits = AtomicU64::new(0);
+        // Shadow legality-benchmark accumulator: each worker drains its
+        // THREAD-LOCAL tally once at join and merges it here (one lock per
+        // worker per solve — never on the hot path). Instrumentation only.
+        let total_shadow: Mutex<crate::movegen::ShadowTally> =
+            Mutex::new(crate::movegen::ShadowTally::default());
 
         let tt = self.tt.as_ref();
         let race_tt = self.race_tt.as_ref();
@@ -1122,6 +1135,7 @@ impl<'a> Solver<'a> {
                 let total_fp_extractions = &total_fp_extractions;
                 let total_fp_prunes = &total_fp_prunes;
                 let total_fp_mask_bits = &total_fp_mask_bits;
+                let total_shadow = &total_shadow;
                 scope.spawn(move || {
                     let mut worker = Worker {
                         b,
@@ -1164,6 +1178,13 @@ impl<'a> Solver<'a> {
                     total_fp_extractions.fetch_add(worker.fp_extractions, Ordering::Relaxed);
                     total_fp_prunes.fetch_add(worker.fp_prunes, Ordering::Relaxed);
                     total_fp_mask_bits.fetch_add(worker.fp_mask_bits, Ordering::Relaxed);
+                    // Drain THIS worker thread's shadow tally (accumulated
+                    // thread-locally by `movegen::walls_dsu` during the
+                    // search) and merge it once at join. Instrumentation only.
+                    total_shadow
+                        .lock()
+                        .expect("shadow mutex poisoned")
+                        .merge(&crate::movegen::take_shadow_tally());
                     if !worker.aborted {
                         // A completed full-window root search: its value is the
                         // exact game value. Signal peers to stop and record it.
@@ -1186,6 +1207,9 @@ impl<'a> Solver<'a> {
         self.fp_extractions = total_fp_extractions.load(Ordering::Relaxed);
         self.fp_prunes = total_fp_prunes.load(Ordering::Relaxed);
         self.fp_mask_bits = total_fp_mask_bits.load(Ordering::Relaxed);
+        self.shadow = total_shadow
+            .into_inner()
+            .expect("shadow mutex poisoned");
 
         let results = results.into_inner().expect("results mutex poisoned");
         // At least one worker (with 1 thread, exactly one) completes: the FIRST
