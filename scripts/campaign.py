@@ -7,6 +7,7 @@ Greedy races the optimal shortest path, so beating it requires real wall tactics
 
 Usage: python scripts/campaign.py [iterations] [games_per_iter] [sims] [device]
 """
+import json
 import os
 import sys
 
@@ -17,6 +18,7 @@ import torch
 
 from agents.az.model import QuoridorNet
 from agents.az.train import form_dense_targets, train_minibatched, save_checkpoint, augment_lr
+from agents.az.diagnostics import policy_diagnostics
 from scripts.selfplay_native import run_selfplay
 
 
@@ -76,10 +78,16 @@ def winrate_vs(net, device, opponent="greedy", sims=60, games=10):
 def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
                  max_plies=80, epochs=4, lr=1e-3, device="mps", seed=0,
                  channels=32, blocks=3, init_ckpt=None, out_dir="models",
-                 eval_games=10, eval_opponent="greedy", log=print):
+                 eval_games=10, eval_opponent="greedy", warmup_frac=0.8,
+                 reward_mode="dense", eval_every=1, log=print):
     # Tip: keep n_games < games_per_iter so the pool refills and MPS batches stay
     # full (n_games == games_per_iter means no refill -> the batch decays in the
     # tail as games finish, cutting throughput).
+    #
+    # reward_mode: "dense"   -> v_target blends outcome with tanh(path_diff) shaping,
+    #                           lambda annealed 0->1 over warmup_frac of the run.
+    #              "outcome" -> lambda == 1 always: pure outcome target, no path-diff
+    #                           shaping (the ablation's "drop dense" arm).
     net = QuoridorNet(channels=channels, blocks=blocks)
     if init_ckpt and os.path.exists(init_ckpt):
         net.load_state_dict(torch.load(init_ckpt, map_location="cpu"), strict=False)
@@ -88,22 +96,35 @@ def run_campaign(iterations=5, games_per_iter=256, n_games=256, sims=100,
     os.makedirs(out_dir, exist_ok=True)
     history = []
     for it in range(iterations):
-        lam = anneal_lambda(it, iterations)
+        lam = 1.0 if reward_mode == "outcome" else anneal_lambda(it, iterations, warmup_frac)
         examples, st = run_selfplay(total_games=games_per_iter, n_games=n_games,
                                     sims=sims, device=device, net=net, seed=seed + it * 2,
                                     max_plies=max_plies)
+        # Mechanism diagnostics on the RAW self-play examples (before augmentation):
+        # wall_mass / entropy expose whether the policy prior collapses off walls.
+        diag = policy_diagnostics(examples)
         # Build targets on CPU (a whole iteration's examples won't fit in GPU mem);
         # train_minibatched moves minibatches to `device`.
         batch = form_dense_targets(augment_lr(examples), lam=lam, device="cpu")
         loss = train_minibatched(net, opt, batch, epochs=epochs, device=device)
-        wr = winrate_vs(net, device, opponent=eval_opponent, games=eval_games)
+        # Evaluation can be expensive (minimax ladder); run it every eval_every
+        # iterations and always on the last one.
+        if it % eval_every == 0 or it == iterations - 1:
+            wr = winrate_vs(net, device, opponent=eval_opponent, games=eval_games)
+        else:
+            wr = None
         rec = dict(it=it, lam=round(lam, 3), loss=round(loss, 4),
                    mean_game_len=round(st["examples"] / max(1, st["games"]), 1),
                    games_per_sec=round(st["games_per_sec"], 2),
+                   wall_mass=diag["wall_mass"], wall_argmax=diag["wall_argmax_rate"],
+                   entropy=diag["entropy"],
                    winrate=wr, eval_opponent=eval_opponent)
         history.append(rec)
         log(rec)
         save_checkpoint(net, os.path.join(out_dir, f"campaign_it{it}.pt"))
+        # Incremental history dump so a dead pod still leaves the trend behind.
+        with open(os.path.join(out_dir, "history.json"), "w") as f:
+            json.dump(history, f, indent=2)
     save_checkpoint(net, os.path.join(out_dir, "campaign_final.pt"))
     return net, history
 
