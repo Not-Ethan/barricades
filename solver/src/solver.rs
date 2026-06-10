@@ -532,7 +532,8 @@ pub fn mirror(b: &Board, s: &State) -> State {
     mirror_state(b, perm.as_deref(), s)
 }
 
-/// Build the horizontal-mirror permutation of the wall-anchor bit layout.
+/// Build the horizontal-mirror permutation of the wall-anchor bit layout
+/// (shared with the df-pn engine, which canonicalizes its TT keys the same way).
 ///
 /// The anchor grid is `(w-1)` columns by `(h-1)` rows; anchor `(wc, wr)` lives
 /// at bit `wr*(w-1)+wc` in BOTH `h_walls` and `v_walls`. A horizontal board
@@ -542,7 +543,7 @@ pub fn mirror(b: &Board, s: &State) -> State {
 /// reflects to a horizontal wall, a vertical to a vertical — orientation is
 /// preserved under a left-right flip). Returns `None` when `w < 2` (no anchor
 /// columns exist; the mirror is the identity and there is nothing to permute).
-fn build_mirror_perm(b: &Board) -> Option<Vec<u8>> {
+pub(crate) fn build_mirror_perm(b: &Board) -> Option<Vec<u8>> {
     if b.w < 2 {
         return None;
     }
@@ -635,7 +636,7 @@ fn pack_key(s: &State) -> (u64, u64, u64) {
 /// by the 4-bit fields here; the solver's boards stay well within that (<= 10),
 /// and a `debug_assert` guards it.
 #[inline]
-fn pack_u128(s: &State) -> u128 {
+pub(crate) fn pack_u128(s: &State) -> u128 {
     debug_assert!(s.walls_left[0] < 16 && s.walls_left[1] < 16, "walls_left field is 4 bits");
     debug_assert!(s.turn < 2);
     debug_assert!(s.h_walls < (1u64 << 36) && s.v_walls < (1u64 << 36), "anchor bitset exceeds 36 bits");
@@ -653,7 +654,7 @@ fn pack_u128(s: &State) -> u128 {
 /// Because mirror is value-preserving with the same side to move, `s` and its
 /// mirror share a game value, so keying the TT on the representative is exact.
 #[inline]
-fn canonical(b: &Board, perm: Option<&[u8]>, s: &State) -> State {
+pub(crate) fn canonical(b: &Board, perm: Option<&[u8]>, s: &State) -> State {
     let m = mirror_state(b, perm, s);
     if pack_key(&m) < pack_key(s) {
         m

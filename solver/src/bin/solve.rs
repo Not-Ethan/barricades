@@ -7,6 +7,8 @@
 //! wall-clock time).
 //!
 //! Environment knobs:
+//!   * `QS_ENGINE`   — `dfpn` selects the df-pn engine (Stage 1); default is
+//!     the verified alpha-beta solver. Both compute the same exact value.
 //!   * `QS_THREADS`  — worker threads for the lazy-SMP search (default
 //!     num_cpus). `QS_THREADS=1` reproduces the single-thread value/behaviour.
 //!   * `QS_TT_MB`    — main transposition-table budget in MiB (default 2048).
@@ -14,6 +16,10 @@
 //!     memo is config-granular LRU and exact, so the cap is value-neutral.
 //!   * `QS_ORDERING=0` / `QS_SYMMETRY=0` — disable ordering / mirror TT
 //!     canonicalization for staged measurement (neither changes the value).
+//!   * df-pn only: `QS_DFPN_MB` (least-work TT MiB, default 1024), `QS_EPS`
+//!     (1+ε trick, default 0.25), `QS_DFPN_H=0` (disable df-pn+ leaf init),
+//!     `QS_DFPN_LOOP_CAP`, `QS_DFPN_SIM_BUDGET`, `QS_DFPN_FALLBACK_MB`
+//!     (embedded AB fallback TT).
 //!
 //! The parallel value is provably identical to the single-thread value (parallel
 //! alpha-beta over a shared TT is exact). `nodes` counts every internal node
@@ -26,6 +32,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use quoridor_solver::board::Board;
+use quoridor_solver::dfpn::DfpnSolver;
 use quoridor_solver::solver::Solver;
 
 fn parse_u8(s: &str) -> Option<u8> {
@@ -48,6 +55,53 @@ fn main() -> ExitCode {
 
     let board = Board::new(w, h, walls);
     let start = board.initial();
+
+    // Engine selection: `QS_ENGINE=dfpn` runs the df-pn engine (Stage 1);
+    // anything else (default) runs the verified alpha-beta solver, which
+    // remains the differential oracle.
+    let engine = std::env::var("QS_ENGINE").unwrap_or_default();
+    if engine.eq_ignore_ascii_case("dfpn") {
+        let mut solver = DfpnSolver::new(&board);
+        let t0 = Instant::now();
+        let value = solver.solve(&start);
+        let elapsed = t0.elapsed();
+        let st = solver.stats;
+        let fill_pct = if solver.tt_capacity() > 0 {
+            100.0 * solver.tt_len() as f64 / solver.tt_capacity() as f64
+        } else {
+            0.0
+        };
+        println!(
+            "W×H={}×{} walls={}  engine=dfpn  value={:?}  nodes={}  mid_nodes={}  race_nodes={}  \
+             tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  rep_hits={}  twins={}  \
+             sims={}  sim_nodes={}  sim_verified={}  fallbacks={} (child={} node={} twin={} root={})  \
+             race_entries={}  time={:.3}s",
+            w,
+            h,
+            walls,
+            value,
+            st.total_nodes(),
+            st.nodes,
+            st.race_nodes,
+            solver.tt_len(),
+            solver.tt_capacity(),
+            fill_pct,
+            solver.tt_bytes(),
+            st.rep_hits,
+            st.twin_stores,
+            st.sim_calls,
+            st.sim_nodes,
+            st.sim_verified,
+            st.fallbacks(),
+            st.fallback_child,
+            st.fallback_node,
+            st.fallback_twin,
+            st.fallback_root,
+            solver.race_tt_len(),
+            elapsed.as_secs_f64(),
+        );
+        return ExitCode::SUCCESS;
+    }
 
     let mut solver = Solver::new(&board);
     // Staged-measurement toggles (default ON). `QS_ORDERING=0` disables
