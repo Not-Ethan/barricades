@@ -24,7 +24,8 @@ use std::time::Instant;
 
 use quoridor_solver::board::Board;
 use quoridor_solver::movegen::{
-    apply, legal_moves, legal_walls, legal_walls_bruteforce, legal_walls_writeup_bench,
+    apply, legal_moves, legal_walls, legal_walls_bruteforce, legal_walls_cascade_bench,
+    legal_walls_writeup_bench,
 };
 use quoridor_solver::state::{Move, State};
 
@@ -118,9 +119,15 @@ fn main() {
             let a = key(&legal_walls_bruteforce(&b, s));
             let wmode = key(&legal_walls_writeup_bench(&b, s));
             let c = key(&legal_walls(&b, s));
+            let cas = key(&legal_walls_cascade_bench(&b, s));
             assert_eq!(
                 a, wmode,
                 "WRITEUP MODE DIVERGED at pawns={:?} h={:#x} v={:#x} wl={:?} turn={}",
+                s.pawn, s.h_walls, s.v_walls, s.walls_left, s.turn
+            );
+            assert_eq!(
+                a, cas,
+                "CASCADE MODE DIVERGED at pawns={:?} h={:#x} v={:#x} wl={:?} turn={}",
                 s.pawn, s.h_walls, s.v_walls, s.walls_left, s.turn
             );
             assert_eq!(
@@ -135,14 +142,15 @@ fn main() {
 
     // ---- timed runs: (mode, bucket) batches, median of REPS ----
     type ModeFn = fn(&Board, &State) -> Vec<Move>;
-    let modes: [(&str, ModeFn); 3] = [
+    let modes: [(&str, ModeFn); 4] = [
         ("always-bfs", legal_walls_bruteforce as ModeFn),
         ("writeup", legal_walls_writeup_bench as ModeFn),
         ("dsu", legal_walls as ModeFn),
+        ("cascade", legal_walls_cascade_bench as ModeFn),
     ];
 
     println!("mode,bucket,positions,median_ns_per_pos,total_ms");
-    let mut totals = [0f64; 3];
+    let mut totals = [0f64; 4];
     for (mi, (name, f)) in modes.iter().enumerate() {
         // warmup over everything once
         for bs in &by_bucket {
@@ -171,7 +179,7 @@ fn main() {
             println!("{name},{k},{},{:.1},{:.2}", bs.len(), med, med * bs.len() as f64 / 1e6);
         }
     }
-    println!("# totals (weighted): always-bfs={:.1}ms writeup={:.1}ms dsu={:.1}ms", totals[0] / 1e6, totals[1] / 1e6, totals[2] / 1e6);
-    println!("# speedup vs always-bfs: writeup={:.2}x dsu={:.2}x", totals[0] / totals[1], totals[0] / totals[2]);
-    println!("# dsu vs writeup: {:.2}x", totals[1] / totals[2]);
+    println!("# totals (weighted): always-bfs={:.1}ms writeup={:.1}ms dsu={:.1}ms cascade={:.1}ms", totals[0] / 1e6, totals[1] / 1e6, totals[2] / 1e6, totals[3] / 1e6);
+    println!("# speedup vs always-bfs: writeup={:.2}x dsu={:.2}x cascade={:.2}x", totals[0] / totals[1], totals[0] / totals[2], totals[0] / totals[3]);
+    println!("# cascade vs dsu: {:.2}x   cascade vs writeup: {:.2}x", totals[2] / totals[3], totals[1] / totals[3]);
 }

@@ -83,3 +83,28 @@ small saturated boards, growing with board size, and never unsound by constructi
 (curve-closing candidates always fall through to the exact check). Combined finding
 with the in-search shadow data: the writeup's heuristic was a good idea correctly
 aimed; connectivity tracking is its natural completion.
+
+## Addendum: the three-stage cascade (contact → DSU → BFS)
+
+Layering the cheap contact count BEFORE the DSU (skip <2-contact candidates with
+pure bitops; consult the DSU only for ≥2-contact ones; BFS only for genuine
+curve-closers — each stage sound, so the cascade is) plus a per-board border
+TEMPLATE for the DSU (struct copy + 2 unions/wall instead of re-running the
+border pre-merge): measured at 600K positions, 4 modes, set-equality verified
+throughout. Result: cascade == DSU overall (4.43× vs 4.42× vs naive), winning
++8–9% at densities 0–1 (363ns — faster than BOTH pure modes; fixes the DSU's
+empty-board inversion) and fading to −1% at saturation (stage-1 evaluation is
+overhead once most candidates reach stage 2 anyway). Architecturally correct,
+practically neutral here because the DSU's per-call constant was already
+~400ns; kept as a bench mode (`legal_walls_cascade_bench`), not wired into the
+engine. Incremental DSU maintenance across the search tree was evaluated and
+rejected: it requires rollback machinery + a make/unmake search architecture to
+save ~20 array ops per node vs the template copy.
+
+## 6×5 W7 = FIRST-PLAYER WIN — node counts now DECLINING (plateau confirmed)
+
+`solve 6 5 7`: value=Win, 28,768,125,565 nodes, 5,174s (86 min, 64GiB TT @95%).
+**W4 12.9B → W5 38.2B → W6 40.0B → W7 28.8B**: solving cost peaked just past
+the value transition and is falling, as predicted (decisiveness + board
+saturation + factorial transposition merging). Ladder: P2 at W0–W3, P1 at
+W4–W7.

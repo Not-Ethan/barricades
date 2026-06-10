@@ -187,6 +187,7 @@ fn wall_posts(wc: u8, wr: u8, horiz: bool) -> [(u8, u8); 3] {
 /// DSU over lattice posts with all border posts pre-merged into one BORDER
 /// component and every placed wall's three posts unioned. Rebuilt per
 /// `legal_walls` call (~border perimeter + 2 unions per placed wall).
+#[derive(Clone, Copy)]
 struct PostDsu {
     parent: [u8; MAX_POSTS],
     /// Posts per row: `w + 1`.
@@ -218,7 +219,12 @@ impl PostDsu {
     }
 
     /// Build from the placed walls of `s`.
-    fn build(b: &Board, s: &State) -> PostDsu {
+    /// Border-only template: fresh singletons with the perimeter pre-merged.
+    /// Identical for every position on a given board, so callers can build it
+    /// ONCE and stamp per-position copies (`PostDsu` is a flat Copy array) —
+    /// the border pre-merge (~2(w+h) unions) was the dominant per-call build
+    /// cost before this split.
+    fn border_template(b: &Board) -> PostDsu {
         let pw = b.w + 1; // posts per row
         let ph = b.h + 1; // post rows
         let n = pw as usize * ph as usize;
@@ -228,7 +234,6 @@ impl PostDsu {
             *p = i as u8;
         }
         let mut dsu = PostDsu { parent, pw };
-
         // Pre-merge the border: every perimeter post joins post (0, 0).
         let border = dsu.pid(0, 0);
         for pc in 0..pw {
@@ -243,8 +248,18 @@ impl PostDsu {
             dsu.union(left, border);
             dsu.union(right, border);
         }
+        dsu
+    }
 
-        // Union each placed wall's three posts.
+    fn build(b: &Board, s: &State) -> PostDsu {
+        let mut dsu = Self::border_template(b);
+        dsu.add_walls(b, s);
+        dsu
+    }
+
+    /// Union each placed wall's three posts into an existing (template) DSU.
+    fn add_walls(&mut self, b: &Board, s: &State) {
+        let dsu = self;
         let aw = b.w - 1; // anchors per row
         let mut bits = s.h_walls;
         while bits != 0 {
@@ -266,7 +281,6 @@ impl PostDsu {
             dsu.union(a, c);
             dsu.union(c, e);
         }
-        dsu
     }
 
     /// THREE-POST skip test: the candidate closes no curve iff the components
@@ -492,6 +506,68 @@ pub fn legal_walls(b: &Board, s: &State) -> Vec<Move> {
 /// path check on every non-overlapping candidate, no fast path of any kind.
 pub fn legal_walls_bruteforce(b: &Board, s: &State) -> Vec<Move> {
     walls_inner(b, s)
+}
+
+/// BENCH ONLY: the three-stage filter CASCADE (user-designed) — lead with the
+/// cheap contact count (pure bitops; <2 contacts among {border ∪ occupied}
+/// posts cannot attach twice, hence cannot close a curve → skip free), consult
+/// the DSU only for ≥2-contact candidates (different components → harmless
+/// merge → skip), flood-fill only for genuine curve-closers. Each stage is
+/// individually sound, so the cascade is. The DSU is stamped lazily from a
+/// per-board border template (struct copy + 2 unions per placed wall) the
+/// first time stage 2 is reached — empty/sparse positions often never pay for
+/// the DSU at all.
+pub fn legal_walls_cascade_bench(b: &Board, s: &State) -> Vec<Move> {
+    use std::cell::RefCell;
+    thread_local! {
+        static TPL: RefCell<Option<((u8, u8), PostDsu)>> = const { RefCell::new(None) };
+    }
+    if s.walls_left[s.turn as usize] == 0 {
+        return Vec::new();
+    }
+    let occ = occupied_posts(b, s);
+    let mut dsu: Option<PostDsu> = None; // built lazily on first stage-2 hit
+    let mut out: Vec<Move> = Vec::new();
+    for &horiz in &[true, false] {
+        for wc in 0..b.w - 1 {
+            for wr in 0..b.h - 1 {
+                if overlaps(b, s, wc, wr, horiz) {
+                    continue;
+                }
+                // Stage 1: contact count (bitops). <2 contacts -> provably legal.
+                if !writeup_needs_bfs(b, occ, wc, wr, horiz) {
+                    out.push(Move::Wall { wc, wr, horiz });
+                    continue;
+                }
+                // Stage 2: exact connectivity (DSU), template-stamped lazily.
+                let d = dsu.get_or_insert_with(|| {
+                    let mut t = TPL.with(|c| {
+                        let mut c = c.borrow_mut();
+                        match &*c {
+                            Some((dims, tpl)) if *dims == (b.w, b.h) => *tpl,
+                            _ => {
+                                let tpl = PostDsu::border_template(b);
+                                *c = Some(((b.w, b.h), tpl));
+                                tpl
+                            }
+                        }
+                    });
+                    t.add_walls(b, s);
+                    t
+                });
+                if d.closes_no_curve(wc, wr, horiz) {
+                    out.push(Move::Wall { wc, wr, horiz });
+                    continue;
+                }
+                // Stage 3: the exact check.
+                let s2 = with_wall_bit(b, s, wc, wr, horiz);
+                if b.has_path(&s2, 0) && b.has_path(&s2, 1) {
+                    out.push(Move::Wall { wc, wr, horiz });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// BENCH ONLY (not wired into the engine): the writeup's legality filter as an
