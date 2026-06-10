@@ -401,3 +401,24 @@ production path. **AB + theorem features remains the production engine.**
   should bite hardest (deep wall-exhaustion layers dominate); pair with a
   ≥ 64 GB box to remove the swap wall, which remains the binding constraint at
   W4-class TT sizes.
+
+## 🏆 6×5 W4 = FIRST-PLAYER WIN — the parity transition (2026-06-10)
+
+`solve 6 5 4` (pinned verified build aa1f978: parallel lazy-SMP + depth-folded
+bounded TT + LRU race cache; theorem features absent) — **value=Win**,
+12,914,083,248 nodes, 13,301 s wall under heavy workflow contention (17,002 s
+CPU ≈ 1.3 effective cores — a quiet-machine equivalent of ~40 min at 8 threads).
+TT 31.4M entries / 93.6% of QS_TT_MB=1500 (1 GB table); race cache 51.9M
+entries / 68,732 configs (QS_RACE_MB=800); peak RSS 1.69 GB — caps held.
+
+**6×5 ladder: W0=P2, W1=P2, W2=P2, W3=P2, W4=P1-WIN.** The odd-height
+parity→tempo transition (5×5 flips at W5 per the writeup) arrives at **W4** on
+6×5 — the first such transition computed past the area-28 frontier. The Win is
+exact by construction (decisive values from full-window AB are
+ceiling/eviction/thread-independent); the build lineage is the adversarially
+verified one. Caveat for the record: like all our decisive results it rests on
+the verified-exactness argument + test suites, with the df-pn engine available
+as an independent cross-check (not yet run at W4 scale).
+
+Next: W5 (est. ~10x nodes ≈ 100-150B ≈ 7-10 h quiet at 8 threads) — does the
+P1 win persist, or does 6×5 oscillate like the writeup's anomalous 4×7?
