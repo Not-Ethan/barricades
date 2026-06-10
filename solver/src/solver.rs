@@ -7,6 +7,7 @@
 
 use crate::board::Board;
 use crate::endgame::RaceTt;
+use crate::footprint::{FootprintCache, FpEntry};
 use crate::state::{Move, State};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,39 @@ use std::sync::{Arc, Mutex};
 /// the validation boards is well under this, and any deeper ply simply skips the
 /// killer heuristic (it only affects ordering, never values).
 const MAX_PLY: usize = 256;
+
+/// Footprint pruning (Theorem 1, Win direction): minimum remaining depth at
+/// which a FRESH extraction attempt is worth its cost (cached masks are used
+/// at every depth — a compiled certificate is a true-value object). Cost
+/// heuristic only; never affects values. Env override: `QS_FP_MIND`.
+const FP_MIN_DEPTH: u32 = 6;
+
+/// Footprint attempt gate: require the certificate owner Y to be STRICTLY
+/// ahead in the raw race (`dist(Y) + margin <= dist(Z)`). Measured on 5x5-w2:
+/// margin 0 admits deep tempo-race flip-proofs that cost ~2.3x total nodes;
+/// margin 1 collapses the overhead to ~OFF parity while PRUNING MORE (the
+/// strictly-ahead certificates are the shallow, corridor-local ones the doc's
+/// near-endgame estimate is built on). Cost heuristic only; never affects
+/// values. Env override: `QS_FP_MARGIN`.
+const FP_DIST_MARGIN: i64 = 1;
+
+/// Footprint attempt gate: cap on Y's goal distance (extraction concentrates
+/// on near-goal funnels; `u32::MAX` disables). Cost heuristic only. Env
+/// override: `QS_FP_MAXDY`.
+const FP_MAX_DY: u32 = u32::MAX;
+
+/// Footprint attempt gate: number of wall replies that must have been
+/// SEARCHED at the node before a fresh extraction is attempted (cached masks
+/// apply from the first wall regardless). A node that cuts off early never
+/// pays an extraction; a genuine refutation fan pays after `K` walls and
+/// prunes the rest. Cost heuristic only. Env override: `QS_FP_DEFER`.
+const FP_DEFER_WALLS: u32 = 2;
+
+/// Footprint pruning: a failed attempt cached at remaining depth `d` is only
+/// retried when a later query is at least this much deeper (failures can be
+/// depth-relative: e.g. the `flip(s)` win was not provable within `d`). Cost
+/// heuristic only.
+const FP_RETRY_MARGIN: u32 = 4;
 
 /// Game-theoretic value for the side to move.
 ///
@@ -458,6 +492,40 @@ pub struct Solver<'a> {
     /// the horizontal-mirror canonical representative. Toggle for staged
     /// measurement ONLY; both settings return identical values.
     use_symmetry: bool,
+    /// THEOREM 4 (one-sided frozen-race bounds; `docs/superpowers/
+    /// solver-pruning-theorems.md` §B.4): when enabled (`QS_T4=1`; default OFF — see Solver::with_tt_mb rationale
+    /// disables), nodes where EXACTLY ONE side has exhausted its walls get a
+    /// provably-valid Lower/Upper bound from the frozen-race value (both
+    /// budgets zeroed), synthesized as a depth-infinity TT-style hit. Decisive
+    /// bounds replace the whole subtree. Falsification-validated: exact-value
+    /// replay at all 2,121,148 graph states across five boards, zero
+    /// mismatches. Toggling is value-neutral (A/B gated by tests/theorem4.rs);
+    /// OFF only forfeits the cutoffs.
+    use_t4: bool,
+    /// THEOREM 1 / Corollary 1, Win direction (wall-relevance footprint
+    /// mustplay pruning; `docs/superpowers/solver-pruning-theorems.md` §A):
+    /// when enabled (`QS_FOOTPRINT=1`; default OFF), a Z-to-move node whose
+    /// turn-flipped twin `flip(s)` is a PROVEN true Win for the opponent Y
+    /// gets a compiled certificate footprint (two wall-anchor masks); every Z
+    /// wall outside the masks has EXACT child value Loss-for-Z (Theorem 1
+    /// executes the certificate verbatim through the insertion), so the
+    /// refutation loop skips it. Win-direction prunes are exact child values
+    /// — skipping never changes the max (§A.2 integration rule), so toggling
+    /// is value-neutral (A/B gated by tests/footprint.rs). Extraction uses
+    /// the §A.5 AMENDED rank scheme: build-then-verify (Kahn on the closure
+    /// graph) with K-boost repair and abort = sound no-prune fallback; race
+    /// regions resolve through the engine's exact race short-circuit. The
+    /// unsound TT-hot dtw rank is NOT used.
+    use_footprint: bool,
+    /// Shared per-position footprint cache (canonical keys, mirrored masks
+    /// per the doc's G5 discipline). Pure cache of true-certificate masks.
+    fp_cache: Arc<FootprintCache>,
+    /// Footprint attempt-gate parameters (cost heuristics only; defaults from
+    /// the FP_* constants, env-overridable for ladder experiments).
+    fp_min_depth: u32,
+    fp_margin: i64,
+    fp_max_dy: u32,
+    fp_defer: u32,
     /// Number of worker threads for `solve` (from `QS_THREADS`, default
     /// `default_threads()`). 1 reproduces single-thread behaviour/value.
     nthreads: usize,
@@ -467,6 +535,29 @@ pub struct Solver<'a> {
     /// `race_value`. Instrumentation only — does not affect search results.
     /// (Parallel node counts vary run-to-run; only the VALUE is deterministic.)
     pub nodes: u64,
+    /// Profiling counter: Theorem-4 evaluations — one-sided-exhaustion nodes
+    /// where the frozen-race bound was computed — summed across the worker
+    /// threads of the last `solve`. Instrumentation only.
+    pub t4_fires: u64,
+    /// Profiling counter: Theorem-4 cutoffs — fires whose bound resolved the
+    /// node with NO move loop (decisive Win-Lower / Loss-Upper, or a Draw bound
+    /// closing the window) — summed across workers. Each one replaced an entire
+    /// subtree with a leaf. Instrumentation only.
+    pub t4_cutoffs: u64,
+    /// Profiling counter: footprint extraction ATTEMPTS (gates passed, fresh
+    /// certificate build started) — summed across workers. Instrumentation only.
+    pub fp_attempts: u64,
+    /// Profiling counter: successful footprint extractions (a verified
+    /// certificate compiled to masks). Instrumentation only.
+    pub fp_extractions: u64,
+    /// Profiling counter: wall moves SKIPPED by footprint mustplay pruning
+    /// (each skip is an exact Loss-for-Z child the search never expanded).
+    /// Instrumentation only.
+    pub fp_prunes: u64,
+    /// Profiling counter: sum of footprint mask popcounts over successful
+    /// extractions (average footprint size = `fp_mask_bits / fp_extractions`).
+    /// Instrumentation only.
+    pub fp_mask_bits: u64,
 }
 
 /// One worker thread's search context for the lazy-SMP solve. Holds shared
@@ -491,6 +582,22 @@ struct Worker<'a> {
     mirror_perm: Option<&'a [u8]>,
     use_ordering: bool,
     use_symmetry: bool,
+    /// Theorem-4 one-sided frozen-race bounds enabled (see `Solver::use_t4`).
+    use_t4: bool,
+    /// Footprint mustplay pruning enabled (see `Solver::use_footprint`).
+    use_footprint: bool,
+    /// Shared footprint mask cache (see `Solver::fp_cache`).
+    fp_cache: &'a FootprintCache,
+    /// True while THIS worker is inside a footprint extraction's certificate
+    /// solves. Nested extraction ATTEMPTS are suppressed (pure cost control —
+    /// cached masks are still USED; skipping a prune is always sound).
+    fp_in_extraction: bool,
+    /// Attempt-gate parameters (see the FP_* constants; resolved once at
+    /// construction from the env overrides). Cost heuristics only.
+    fp_min_depth: u32,
+    fp_margin: i64,
+    fp_max_dy: u32,
+    fp_defer: u32,
     /// This worker's diversity index (0..nthreads). Perturbs ordering tie-breaks
     /// so different threads explore the tree in different orders (lazy-SMP
     /// diversification). ORDERING ONLY — never changes a value.
@@ -501,6 +608,15 @@ struct Worker<'a> {
     stop: &'a AtomicBool,
     /// This worker's node count (summed into `Solver::nodes` after the join).
     nodes: u64,
+    /// Theorem-4 fire count for this worker (summed into `Solver::t4_fires`).
+    t4_fires: u64,
+    /// Theorem-4 cutoff count for this worker (summed into `Solver::t4_cutoffs`).
+    t4_cutoffs: u64,
+    /// Footprint counters for this worker (summed into the `Solver` fields).
+    fp_attempts: u64,
+    fp_extractions: u64,
+    fp_prunes: u64,
+    fp_mask_bits: u64,
     /// Set true if this worker hit the abort flag and returned early, so the
     /// caller knows its result is NOT a completed value and must be ignored.
     aborted: bool,
@@ -740,6 +856,30 @@ impl<'a> Solver<'a> {
         // key lands in; the full key is verified on probe).
         let nshards = (nthreads.saturating_mul(4)).max(MIN_SHARDS);
         let tt = ShardedTt::new(tt_mb.max(1), board_key_ceiling(b), nshards);
+        // Theorem-4 toggle: default OFF; `QS_T4=1` enables. Value-neutral A/B
+        // knob (both settings return identical values — verified). Default OFF
+        // because the measured ladder benchmark (8 threads, 6x5-w2/5x5-w3)
+        // showed ON costs 1.1-2.4x MORE nodes: per-fire frozen-race solves and
+        // race-cache pressure outweigh the cutoffs on these rungs. Re-evaluate
+        // at higher rungs / different memory regimes.
+        let use_t4 = std::env::var("QS_T4").map(|v| v.trim() == "1").unwrap_or(false);
+        // Footprint-pruning toggle: default OFF; `QS_FOOTPRINT=1` enables.
+        // Value-neutral A/B knob (verified). Default OFF: extraction overhead
+        // plus the depth-folded TT already collapsing most maskable subtrees
+        // made ON a net slowdown on every like-for-like rung measured.
+        let use_footprint = std::env::var("QS_FOOTPRINT")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+        let env_u32 = |k: &str, d: u32| -> u32 {
+            std::env::var(k).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(d)
+        };
+        let fp_min_depth = env_u32("QS_FP_MIND", FP_MIN_DEPTH);
+        let fp_max_dy = env_u32("QS_FP_MAXDY", FP_MAX_DY);
+        let fp_defer = env_u32("QS_FP_DEFER", FP_DEFER_WALLS);
+        let fp_margin = std::env::var("QS_FP_MARGIN")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(FP_DIST_MARGIN);
         Solver {
             b,
             tt: Arc::new(tt),
@@ -747,8 +887,21 @@ impl<'a> Solver<'a> {
             mirror_perm: build_mirror_perm(b),
             use_ordering: true,
             use_symmetry: true,
+            use_t4,
+            use_footprint,
+            fp_cache: Arc::new(FootprintCache::default()),
+            fp_min_depth,
+            fp_margin,
+            fp_max_dy,
+            fp_defer,
             nthreads,
             nodes: 0,
+            t4_fires: 0,
+            t4_cutoffs: 0,
+            fp_attempts: 0,
+            fp_extractions: 0,
+            fp_prunes: 0,
+            fp_mask_bits: 0,
         }
     }
 
@@ -787,6 +940,40 @@ impl<'a> Solver<'a> {
     /// staged measurement only — does not affect values.
     pub fn set_use_symmetry(&mut self, on: bool) {
         self.use_symmetry = on;
+    }
+
+    /// Enable/disable the Theorem-4 one-sided frozen-race bounds (default on;
+    /// also settable via `QS_T4=0`). VALUE-NEUTRAL A/B toggle: the bounds are
+    /// proven uniformly in depth (doc §B.4), so ON and OFF return identical
+    /// values on every input — OFF only forfeits the whole-subtree cutoffs.
+    pub fn set_use_t4(&mut self, on: bool) {
+        self.use_t4 = on;
+    }
+
+    /// Enable/disable the Theorem-1 Win-direction footprint mustplay pruning
+    /// (default on; also settable via `QS_FOOTPRINT=0`). VALUE-NEUTRAL A/B
+    /// toggle: pruned walls have EXACT child value Loss-for-the-mover by
+    /// Theorem 1 + Corollary 1, so skipping them never changes the negamax
+    /// max — ON and OFF return identical values on every input (gated by
+    /// tests/footprint.rs); OFF only forfeits the wall-branching cut.
+    pub fn set_use_footprint(&mut self, on: bool) {
+        self.use_footprint = on;
+    }
+
+    /// Number of positions in the shared footprint cache (reporting only).
+    pub fn footprint_cache_len(&self) -> usize {
+        self.fp_cache.len()
+    }
+
+    /// Override the footprint attempt-gate parameters (test/tooling hook; the
+    /// CLI path uses the `QS_FP_*` env overrides). COST HEURISTICS ONLY —
+    /// gates decide where extraction is attempted, never what may be pruned,
+    /// so no setting can change a value.
+    pub fn set_footprint_gates(&mut self, min_depth: u32, margin: i64, max_dy: u32, defer: u32) {
+        self.fp_min_depth = min_depth;
+        self.fp_margin = margin;
+        self.fp_max_dy = max_dy;
+        self.fp_defer = defer;
     }
 
     /// Number of entries currently in the (bounded) race endgame memo.
@@ -846,12 +1033,25 @@ impl<'a> Solver<'a> {
         // publish nothing. Guarded by a mutex (written at most `nthreads` times).
         let results: Mutex<Vec<(Value, u64)>> = Mutex::new(Vec::new());
         let total_nodes = AtomicU64::new(0);
+        let total_t4_fires = AtomicU64::new(0);
+        let total_t4_cutoffs = AtomicU64::new(0);
+        let total_fp_attempts = AtomicU64::new(0);
+        let total_fp_extractions = AtomicU64::new(0);
+        let total_fp_prunes = AtomicU64::new(0);
+        let total_fp_mask_bits = AtomicU64::new(0);
 
         let tt = self.tt.as_ref();
         let race_tt = self.race_tt.as_ref();
+        let fp_cache = self.fp_cache.as_ref();
         let mirror_perm = self.mirror_perm.as_deref();
         let use_ordering = self.use_ordering;
         let use_symmetry = self.use_symmetry;
+        let use_t4 = self.use_t4;
+        let use_footprint = self.use_footprint;
+        let fp_min_depth = self.fp_min_depth;
+        let fp_margin = self.fp_margin;
+        let fp_max_dy = self.fp_max_dy;
+        let fp_defer = self.fp_defer;
         let b = self.b;
 
         std::thread::scope(|scope| {
@@ -859,6 +1059,12 @@ impl<'a> Solver<'a> {
                 let stop = &stop;
                 let results = &results;
                 let total_nodes = &total_nodes;
+                let total_t4_fires = &total_t4_fires;
+                let total_t4_cutoffs = &total_t4_cutoffs;
+                let total_fp_attempts = &total_fp_attempts;
+                let total_fp_extractions = &total_fp_extractions;
+                let total_fp_prunes = &total_fp_prunes;
+                let total_fp_mask_bits = &total_fp_mask_bits;
                 scope.spawn(move || {
                     let mut worker = Worker {
                         b,
@@ -869,13 +1075,33 @@ impl<'a> Solver<'a> {
                         mirror_perm,
                         use_ordering,
                         use_symmetry,
+                        use_t4,
+                        use_footprint,
+                        fp_cache,
+                        fp_in_extraction: false,
+                        fp_min_depth,
+                        fp_margin,
+                        fp_max_dy,
+                        fp_defer,
                         tid,
                         stop,
                         nodes: 0,
+                        t4_fires: 0,
+                        t4_cutoffs: 0,
+                        fp_attempts: 0,
+                        fp_extractions: 0,
+                        fp_prunes: 0,
+                        fp_mask_bits: 0,
                         aborted: false,
                     };
                     let v = worker.ab(s, ceiling, 0, Value::Loss, Value::Win);
                     total_nodes.fetch_add(worker.nodes, Ordering::Relaxed);
+                    total_t4_fires.fetch_add(worker.t4_fires, Ordering::Relaxed);
+                    total_t4_cutoffs.fetch_add(worker.t4_cutoffs, Ordering::Relaxed);
+                    total_fp_attempts.fetch_add(worker.fp_attempts, Ordering::Relaxed);
+                    total_fp_extractions.fetch_add(worker.fp_extractions, Ordering::Relaxed);
+                    total_fp_prunes.fetch_add(worker.fp_prunes, Ordering::Relaxed);
+                    total_fp_mask_bits.fetch_add(worker.fp_mask_bits, Ordering::Relaxed);
                     if !worker.aborted {
                         // A completed full-window root search: its value is the
                         // exact game value. Signal peers to stop and record it.
@@ -887,6 +1113,12 @@ impl<'a> Solver<'a> {
         });
 
         self.nodes = total_nodes.load(Ordering::Relaxed);
+        self.t4_fires = total_t4_fires.load(Ordering::Relaxed);
+        self.t4_cutoffs = total_t4_cutoffs.load(Ordering::Relaxed);
+        self.fp_attempts = total_fp_attempts.load(Ordering::Relaxed);
+        self.fp_extractions = total_fp_extractions.load(Ordering::Relaxed);
+        self.fp_prunes = total_fp_prunes.load(Ordering::Relaxed);
+        self.fp_mask_bits = total_fp_mask_bits.load(Ordering::Relaxed);
 
         let results = results.into_inner().expect("results mutex poisoned");
         // At least one worker (with 1 thread, exactly one) completes: the FIRST
@@ -904,6 +1136,59 @@ impl<'a> Solver<'a> {
              finish never observes `stop` set, so it never aborts)",
         );
         value
+    }
+
+    /// TEST/TOOLING HOOK: run the Theorem-1 Win-direction footprint extraction
+    /// directly on `u0` (the certificate owner to move), bypassing the
+    /// in-search gates and the mask cache. Returns the forbidden (H, V)
+    /// wall-anchor masks in `u0`'s REAL orientation — a wall anchored outside
+    /// both masks cannot change `u0`'s Win — or `None` when no verified
+    /// certificate could be built at the solve ceiling (the sound no-prune
+    /// outcome). Certificate child solves run on a fresh single worker over
+    /// this solver's shared TT/race memo (footprint pruning disabled inside,
+    /// so the hook's behaviour is plain alpha-beta).
+    pub fn extract_footprint(&mut self, u0: &State) -> Option<(u64, u64)> {
+        let w = self.b.w as u32;
+        let h = self.b.h as u32;
+        let walls = self.b.walls as u32;
+        let ceiling = 4 * (w + h) + 2 * walls + 8;
+        let stop = AtomicBool::new(false);
+        let mut worker = Worker {
+            b: self.b,
+            tt: self.tt.as_ref(),
+            race_tt: self.race_tt.as_ref(),
+            killers: vec![[None, None]; MAX_PLY],
+            history: vec![0u32; MOVE_INDEX_SPAN],
+            mirror_perm: self.mirror_perm.as_deref(),
+            use_ordering: self.use_ordering,
+            use_symmetry: self.use_symmetry,
+            use_t4: self.use_t4,
+            use_footprint: false,
+            fp_cache: self.fp_cache.as_ref(),
+            fp_in_extraction: false,
+            fp_min_depth: self.fp_min_depth,
+            fp_margin: self.fp_margin,
+            fp_max_dy: self.fp_max_dy,
+            fp_defer: self.fp_defer,
+            tid: 0,
+            stop: &stop,
+            nodes: 0,
+            t4_fires: 0,
+            t4_cutoffs: 0,
+            fp_attempts: 0,
+            fp_extractions: 0,
+            fp_prunes: 0,
+            fp_mask_bits: 0,
+            aborted: false,
+        };
+        let b = self.b;
+        let mut solve = |st: &State, d: u32, al: Value, be: Value| -> Option<Value> {
+            let v = worker.ab(st, d, 0, al, be);
+            if worker.aborted { None } else { Some(v) }
+        };
+        let res = crate::footprint::extract_win_footprint(b, u0, ceiling, &mut solve);
+        self.nodes = worker.nodes;
+        res
     }
 }
 
@@ -1009,9 +1294,133 @@ impl<'a> Worker<'a> {
             }
         }
 
+        // THEOREM 4 — one-sided frozen-race bounds, synthesized as a
+        // depth-infinity TT-style hit (docs/superpowers/solver-pruning-theorems.md
+        // §B.4; proven via Lemma M + race exactness + the refinement property,
+        // falsification-validated by exact whole-graph relabeling at 2,121,148
+        // states, zero mismatches).
+        //
+        // At a node where EXACTLY ONE side has exhausted its walls, let
+        // `r = race_value(s with walls_left := [0,0])` — the TRUE value (draws
+        // included, same side to move) of the race over the current frozen wall
+        // config, from the existing exact retrograde machinery (memoized per
+        // config in the shared race memo; the `[0,0]` leaves of this subtree
+        // would need the same configs anyway, so the solve is amortized).
+        //
+        //   * Opponent exhausted (mover still holds walls): by Lemma M, zeroing
+        //     the MOVER's budget only shrinks the mover's options, so
+        //     `V_d(s) >= V_d(frozen) = r` for ALL d — a LOWER bound for the side
+        //     to move, uniformly in depth.
+        //       - `r = Win` is DECISIVE: `s` is a true forced Win. Return
+        //         immediately and synthesize the permanent TT entry
+        //         `(Win, Lower, depth = ∞)` — valid at every query depth under
+        //         the depth-fold rule, exactly like the `[0,0]` short-circuit.
+        //       - `r = Draw` raises alpha to Draw (a Loss return is impossible);
+        //         `r = Loss` is vacuous.
+        //   * Mover exhausted (opponent still holds walls): dually
+        //     `V_d(s) <= r` for ALL d — an UPPER bound.
+        //       - `r = Loss` is DECISIVE: a true forced Loss; return immediately
+        //         and synthesize `(Loss, Upper, depth = ∞)`.
+        //       - `r = Draw` lowers beta to Draw (a Win return is impossible);
+        //         `r = Win` is vacuous.
+        //
+        // The non-decisive Draw bounds narrow the window EXACTLY like a TT probe
+        // hit (same flag logic, same `alpha >= beta -> return r` close-out);
+        // they are NOT stored, so a later finite-depth exact entry for this
+        // position is never blocked by an unimprovable depth-∞ bound. The final
+        // store at the end of this node remains flagged against `alpha0`
+        // (captured BEFORE this narrowing), matching the TT-narrowing precedent,
+        // so no stored bound weakens. Toggling `use_t4` is value-neutral.
+        if self.use_t4 && (s.walls_left[0] == 0) != (s.walls_left[1] == 0) {
+            let mut frozen = *s;
+            frozen.walls_left = [0, 0];
+            let (r, race_nodes) = crate::endgame::race_value(self.b, &frozen, self.race_tt);
+            self.nodes += race_nodes;
+            self.t4_fires += 1;
+            if s.walls_left[(1 - s.turn) as usize] == 0 {
+                // Opponent exhausted: r is a LOWER bound for the side to move.
+                if r == Value::Win {
+                    self.tt.store(key, Value::Win, Flag::Lower, u16::MAX);
+                    self.t4_cutoffs += 1;
+                    return Value::Win;
+                }
+                if r > alpha {
+                    alpha = r;
+                }
+            } else {
+                // Mover exhausted: r is an UPPER bound for the side to move.
+                if r == Value::Loss {
+                    self.tt.store(key, Value::Loss, Flag::Upper, u16::MAX);
+                    self.t4_cutoffs += 1;
+                    return Value::Loss;
+                }
+                if r < beta {
+                    beta = r;
+                }
+            }
+            if alpha >= beta {
+                // The Draw bound met the window's other side: resolved with no
+                // move loop, exactly as a TT probe hit returning `val` would.
+                self.t4_cutoffs += 1;
+                return r;
+            }
+        }
+
         let mut best = Value::Loss;
         let moves = self.ordered_moves(s, ply);
+        // THEOREM 1 + COROLLARY 1, Win direction — wall-relevance footprint
+        // mustplay pruning (docs/superpowers/solver-pruning-theorems.md §A;
+        // falsification-validated: 537,771 complete-graph wall checks plus the
+        // targeted T1-T5 families, zero violations).
+        //
+        // At this node the side to move is Z; `flip(s)` is the SAME position
+        // with the opponent Y to move. When `V(flip(s))` is a PROVEN true Win
+        // for Y, a Definition-1 certificate P (strategy + all-Z-replies
+        // closure + verified rank) exists, and Theorem 1 says any Z wall `w`
+        // anchored OUTSIDE the certificate's footprint masks leaves P valid
+        // verbatim: `V(apply(s, w)) = Win` for Y, i.e. EXACTLY `Loss` for Z.
+        // Skipping such a wall therefore never changes the negamax max (the
+        // §A.2 integration rule: Win-direction prunes are exact child values,
+        // safe unconditionally — no alpha guard needed). Pawn moves are always
+        // searched. The masks come lazily from `footprint_masks` (cache or a
+        // fresh build-then-verify extraction; `None` = no certificate = no
+        // pruning, always sound).
+        let mut fp_masks: Option<Option<(u64, u64)>> = None;
+        let mut walls_searched: u32 = 0;
         for m in moves {
+            let is_wall = matches!(m, Move::Wall { .. });
+            if self.use_footprint
+                && let Move::Wall { wc, wr, horiz } = m
+            {
+                // Resolve the node's masks lazily: cached masks apply from the
+                // FIRST wall; a FRESH extraction is deferred until `fp_defer`
+                // wall replies have already been searched at this node (an
+                // early-cutoff node never pays an extraction; a genuine
+                // refutation fan pays once and prunes the rest).
+                let masks = match fp_masks {
+                    Some(x) => x,
+                    None => {
+                        let allow_attempt = walls_searched >= self.fp_defer;
+                        let (resolved, x) = self.footprint_masks(s, depth, ply, allow_attempt);
+                        if self.aborted {
+                            return Value::Draw; // placeholder; discarded
+                        }
+                        if resolved {
+                            fp_masks = Some(x);
+                        }
+                        x
+                    }
+                };
+                if let Some((hm, vm)) = masks {
+                    let bit = 1u64 << ((wr as u32) * (self.b.w as u32 - 1) + wc as u32);
+                    let inside = if horiz { hm & bit != 0 } else { vm & bit != 0 };
+                    if !inside {
+                        // Exact child value Loss-for-Z: skip with zero search.
+                        self.fp_prunes += 1;
+                        continue;
+                    }
+                }
+            }
             let s2 = crate::movegen::apply(self.b, s, m);
             let v = self
                 .ab(&s2, depth - 1, ply + 1, beta.negate(), alpha.negate())
@@ -1020,6 +1429,9 @@ impl<'a> Worker<'a> {
             // placeholder; propagate the abort up without polluting `best`.
             if self.aborted {
                 return Value::Draw;
+            }
+            if is_wall {
+                walls_searched += 1;
             }
             if v > best {
                 best = v;
@@ -1051,6 +1463,104 @@ impl<'a> Worker<'a> {
         // tagged with the query depth `qdepth` at which this bound was proven.
         self.tt.store(key, best, flag, qdepth);
         best
+    }
+
+    /// Footprint masks for the Z-to-move node `s` (called lazily at the first
+    /// wall move of the move loop; `s.walls_left[s.turn] >= 1` is implied).
+    /// Returns the forbidden (H, V) anchor masks of a verified Win certificate
+    /// for `flip(s)` in `s`'s REAL orientation, or `None` (no pruning).
+    ///
+    /// Order of business: shared cache (canonical key, masks mirrored back per
+    /// G5 when the canonical representative is the mirror image) → re-entrancy
+    /// and cost gates → fresh extraction via `footprint::extract_win_footprint`
+    /// with this worker's own alpha-beta as the certificate child solver
+    /// (full window; decisive results are true forced values — G6).
+    fn footprint_masks(
+        &mut self,
+        s: &State,
+        depth: u32,
+        ply: usize,
+        allow_attempt: bool,
+    ) -> (bool, Option<(u64, u64)>) {
+        let mut flip = *s;
+        flip.turn = 1 - s.turn;
+        let canon = canonical(self.b, self.mirror_perm, &flip);
+        let mirrored = canon != flip;
+        let key = pack_u128(&canon);
+        match self.fp_cache.get(key) {
+            Some(FpEntry::Masks(h, v)) => {
+                let m = if mirrored { self.mirror_masks(h, v) } else { (h, v) };
+                return (true, Some(m));
+            }
+            // A failed attempt is retried only at meaningfully greater depth
+            // (failures can be depth-relative; successes never are).
+            Some(FpEntry::Failed(d)) if depth <= d.saturating_add(FP_RETRY_MARGIN) => {
+                return (true, None);
+            }
+            _ => {}
+        }
+        // No NEW attempts while already inside an extraction's certificate
+        // solves (cost control; cached masks above are still used). Skipping
+        // a prune is always sound.
+        if self.fp_in_extraction {
+            return (true, None);
+        }
+        if !allow_attempt {
+            // Deferred: the caller may ask again at a later wall move of this
+            // node (NOT resolved — nothing is memoized for the node yet).
+            return (false, None);
+        }
+        if depth < self.fp_min_depth {
+            return (true, None);
+        }
+        // Heuristic gate (doc §A.5 "Where to apply"): attempt only when Y is
+        // STRICTLY ahead in the raw race — `V(flip(s)) = Win` for Y against a
+        // wall-holding Z is implausible otherwise, and the level-race (margin
+        // 0) flip-proofs are the deep, expensive ones. Cost heuristic only.
+        let y = 1 - s.turn;
+        match (self.b.dist_to_goal(s, y), self.b.dist_to_goal(s, s.turn)) {
+            (Some(dy), Some(dz))
+                if dy <= self.fp_max_dy && (dy as i64) + self.fp_margin <= (dz as i64) => {}
+            _ => return (true, None),
+        }
+        self.fp_attempts += 1;
+        self.fp_in_extraction = true;
+        let b = self.b;
+        let res = {
+            let mut solve = |st: &State, d: u32, al: Value, be: Value| -> Option<Value> {
+                let v = self.ab(st, d, ply + 1, al, be);
+                if self.aborted { None } else { Some(v) }
+            };
+            crate::footprint::extract_win_footprint(b, &flip, depth, &mut solve)
+        };
+        self.fp_in_extraction = false;
+        if self.aborted {
+            return (true, None); // peer finished the root: discard everything
+        }
+        match res {
+            Some((h, v)) => {
+                self.fp_extractions += 1;
+                self.fp_mask_bits += u64::from(h.count_ones() + v.count_ones());
+                let (sh, sv) = if mirrored { self.mirror_masks(h, v) } else { (h, v) };
+                self.fp_cache.put(key, FpEntry::Masks(sh, sv));
+                (true, Some((h, v)))
+            }
+            None => {
+                self.fp_cache.put(key, FpEntry::Failed(depth));
+                (true, None)
+            }
+        }
+    }
+
+    /// Mirror a pair of wall-anchor masks through the horizontal-reflection
+    /// permutation (identity on degenerate boards without anchors). H masks
+    /// map to H masks and V to V — orientation is preserved by a left-right
+    /// flip, exactly as in `mirror_state`.
+    fn mirror_masks(&self, h: u64, v: u64) -> (u64, u64) {
+        match self.mirror_perm {
+            Some(perm) => (permute_bits(h, perm), permute_bits(v, perm)),
+            None => (h, v),
+        }
     }
 
     /// Record a beta-cutoff move into the killer (per-ply, up to 2 distinct

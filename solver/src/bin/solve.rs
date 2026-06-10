@@ -16,6 +16,16 @@
 //!     memo is config-granular LRU and exact, so the cap is value-neutral.
 //!   * `QS_ORDERING=0` / `QS_SYMMETRY=0` — disable ordering / mirror TT
 //!     canonicalization for staged measurement (neither changes the value).
+//!   * `QS_T4=0` — disable the Theorem-4 one-sided frozen-race bounds
+//!     (depth-infinity TT synthesis; value-neutral A/B knob, default ON). The
+//!     `t4_fires` / `t4_cutoffs` stats count bound evaluations and the
+//!     whole-subtree cutoffs they produced.
+//!   * `QS_FOOTPRINT=0` — disable the Theorem-1 Win-direction wall-relevance
+//!     footprint (mustplay) pruning (value-neutral A/B knob, default ON). The
+//!     `fp_attempts` / `fp_extracted` / `fp_prunes` stats count extraction
+//!     attempts, verified certificates compiled to masks, and wall moves
+//!     skipped with zero search; `fp_avg_bits` is the mean footprint size in
+//!     anchor bits over successful extractions.
 //!   * df-pn only: `QS_DFPN_MB` (least-work TT MiB, default 1024), `QS_EPS`
 //!     (1+ε trick, default 0.25), `QS_DFPN_H=0` (disable df-pn+ leaf init),
 //!     `QS_DFPN_LOOP_CAP`, `QS_DFPN_SIM_BUDGET`, `QS_DFPN_FALLBACK_MB`
@@ -139,14 +149,25 @@ fn main() -> ExitCode {
         0.0
     };
 
+    let fp_avg_bits = if solver.fp_extractions > 0 {
+        solver.fp_mask_bits as f64 / solver.fp_extractions as f64
+    } else {
+        0.0
+    };
     println!(
-        "W×H={}×{} walls={}  value={:?}  threads={}  nodes={}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  race_entries={}  race_configs={}  time={:.3}s",
+        "W×H={}×{} walls={}  value={:?}  threads={}  nodes={}  t4_fires={}  t4_cutoffs={}  fp_attempts={}  fp_extracted={}  fp_prunes={}  fp_avg_bits={:.1}  tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  entry_size={}  race_entries={}  race_configs={}  time={:.3}s",
         w,
         h,
         walls,
         value,
         solver.threads(),
         solver.nodes,
+        solver.t4_fires,
+        solver.t4_cutoffs,
+        solver.fp_attempts,
+        solver.fp_extractions,
+        solver.fp_prunes,
+        fp_avg_bits,
         tt_entries,
         tt_capacity,
         fill_pct,

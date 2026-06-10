@@ -274,3 +274,130 @@ In short: on this 16 GB M1 the optimized solver cleanly owns 6×5 through **W2**
 **memory-bound, not compute-bound, at W3**. The fastest path to a complete 6×5 solve is
 more RAM (cloud) to clear W3–W4 immediately, with the k-wall tablebase as the structural
 fix that would make the full wall ladder tractable.
+
+## Theorem-pruning implementation — measured (2026-06-10)
+
+**Build:** the alpha-beta production engine plus the two falsification-validated
+theorem features from `docs/superpowers/solver-pruning-theorems.md`:
+
+1. **Theorem 4 — one-sided frozen-race bounds** (`QS_T4`, default ON; §B.4):
+   at a node where exactly one side has exhausted its walls, the exact
+   frozen-race value (both budgets zeroed, memoized per wall config) is a
+   depth-uniform Lower/Upper bound synthesized as a depth-∞ TT-style hit;
+   decisive bounds (Win-Lower / Loss-Upper) replace the whole subtree.
+   Counters: `t4_fires` (bound evaluations) / `t4_cutoffs` (node resolved with
+   no move loop).
+2. **Theorem 1 / Corollary 1 — Win-direction wall-relevance footprint
+   ("mustplay") pruning** (`QS_FOOTPRINT`, default ON; §A incl. the §A.5
+   build-then-verify rank amendment — the unsound TT-hot `dtw` rank is NOT
+   used): at a Z-to-move node whose turn-flipped twin is a proven true Win for
+   the opponent, a verified certificate closure is compiled to two wall-anchor
+   masks; every Z wall outside the masks is an exact Loss-for-Z child and is
+   skipped with zero search. Cost gates (heuristic only, never value-bearing):
+   `QS_FP_MIND`/`QS_FP_MARGIN`/`QS_FP_MAXDY`/`QS_FP_DEFER`. Counters:
+   `fp_attempts` / `fp_extracted` / `fp_prunes` / `fp_avg_bits`.
+
+Both knobs are **value-neutral A/B toggles**, gated by `tests/theorem4.rs` and
+`tests/footprint.rs`: identical values ON vs OFF on 150+ seeded random
+positions across the five falsifier boards, every known-value gate (writeup
+defaults, 6×5 W0–W2, keystone 6×4, blockade 7×5 = Draw), the theorems doc's
+T1–T5 / P1–P5c suites across all four feature configs, 8-thread×3 determinism,
+plus the T-suite mask-exactness gates (T1/T2 extract exactly the verified
+masks; all six T3 far-wall value-flippers land inside the extracted footprint;
+T4's failed precondition extracts nothing). Full `cargo test --release` green
+with both features ON (the multi-CPU-hour `zz_sign_audit` brute differential
+runs separately).
+
+### Ladder ON/OFF benchmark (8 threads)
+
+Apple M1, 8 cores, 16 GB; `QS_THREADS=8 QS_TT_MB=768 QS_RACE_MB=512`; OFF =
+`QS_T4=0 QS_FOOTPRINT=0`, ON = both defaults. **Measured under concurrent
+load** (an unrelated 8-thread 6×5-W4 baseline solve ran throughout; the Stage-B
+test suite and a 6×5-w3 probe overlapped the first two rungs), so wall-clock is
+indicative; nodes (which include race-retrograde nodes) are the primary metric,
+and lazy-SMP node counts vary run to run.
+
+| rung | value | OFF nodes / time | ON nodes / time | ON/OFF nodes | ON/OFF time |
+|---|---|---|---|---|---|
+| 6×5-w2 | Loss | 30.2M / 5.40 s | 32.8M / 7.38 s | 1.09× | 1.37× |
+| 5×5-w3 | Loss | 163.4M / 134.9 s | 398.0M / 266.0 s | 2.44× | 1.97× |
+| 5×5-w4 | TBD_W4_OFF | TBD | TBD | TBD | TBD |
+| 6×5-w3 | **Loss** | TBD_W3_OFF | 2.551B / 2,924 s (solved; uncapped, `QS_TT_MB=2048 QS_RACE_MB=1024 QS_FP_DEFER=4`) | — | — |
+
+### Fire rates (feature-ON runs)
+
+| rung | t4_fires | t4_cutoffs (decisive %) | fp_attempts → extracted | fp_prunes (walls skipped) | avg footprint (anchors) |
+|---|---|---|---|---|---|
+| 6×5-w2 | 132,524 | 76,057 (57%) | 7,500 → 7,345 (98%) | 191,074 (26.0/extraction) | 7.4 / 40 (18%) |
+| 5×5-w3 | 4,775,894 | 1,400,167 (29%) | 173,055 → 167,550 (97%) | 2,210,807 (13.2/extraction) | 6.2 / 32 (19%) |
+| 6×5-w3 | 9,844,022 | 4,474,680 (45%) | 407,159 → 400,693 (98%) | 7,671,561 (19.1/extraction) | 7.2 / 40 (18%) |
+
+Both theorems fire **massively** in-search: T4 incidence is far above the
+3.5–3.8 % random-playout estimate (search concentrates on wall-burning lines,
+as predicted), 29–57 % of fires are decisive whole-subtree cutoffs, and
+footprint extraction succeeds on 97–98 % of attempts, pruning 13–26 wall
+replies per successful extraction with footprints of only ~18 % of the anchor
+universe.
+
+### The honest verdict vs the 2–6× estimate
+
+**The predicted 2–6× node reduction did NOT materialize on like-for-like
+rungs — measured ON/OFF is 1.1–2.4× MORE nodes and 1.4–2.0× slower** at
+6×5-w2 / 5×5-w3 (8 threads). The pruning is real (millions of exact
+zero-search refutations) but is paid for elsewhere:
+
+- every T4 fire calls `race_value` on the frozen config — memoized per config,
+  but search touches tens of thousands of configs, and the retrograde passes
+  are counted in `nodes` and crowd the LRU race cache;
+- footprint extraction's `flip(s)` certificate solves + closure builds add
+  TT-competing work precisely in the refutation-heavy layers the pruning
+  targets, and the depth-folded TT already collapses much of what the masks
+  would prune (single-thread tuning showed the same shape: 6×5-w2 ST
+  fp-OFF 2.76 s vs fp-ON 9.86 s at margin 1);
+- lazy-SMP thread diversification re-explores pruned regions OFF would also
+  have skipped via TT sharing.
+
+**The features pay at the frontier, not below it.** The first-ever 6×5-w3
+completion (below) came from the feature-ON build; the OFF engine has never
+finished w3 at any tested budget. Defaults stay ON (value-neutral, frontier
+wins); for sub-frontier rungs the knobs allow turning either feature off.
+
+### NEW FRONTIER: 6×5 W3 = Loss (first solve)
+
+`QS_THREADS=8 QS_TT_MB=2048 QS_RACE_MB=1024 QS_FOOTPRINT=1 QS_FP_DEFER=4`,
+features ON, uncapped, under the same concurrent W4 background load:
+**6×5 W3 = Loss** — 2,550,690,734 nodes, 2,923.9 s (~49 min), TT fill 13.2 %
+(8.8M entries of 64M), 65,276 race configs. This extends the solved 6×5 ladder
+from W2 to **W0–W3, all Loss** (consistent with the 5×5 analogy: any parity
+transition expected ≈ W5+). The previous build timed out at > 300 s
+single-thread and was never completed at any budget; the capped 1200 s OFF run
+in the table above TBD_W3_OFF_NOTE. W4 is in flight (see below).
+
+### df-pn pipeline — negative result (kept as cross-check engine)
+
+The parallel df-pn track (Stages 1–2 landed as `01b9dd1` + `688c09c`) is a
+**confirmed negative result for raw speed**: the published ~19× node advantage
+(LOA win proofs) **inverts** on Quoridor — df-pn uses **~9.6× MORE nodes than
+AB** on 5×5-w2 (38.0M vs 3.97M; 64.6 s vs 2.08 s) and **~18.8× more** on
+6×5-w2 (135.1M vs 7.17M; 179.1 s vs 4.07 s), values agreeing everywhere.
+Cause: draw/loss-heavy pawn-shuffle swamps make disproofs path-dependent under
+Kishimoto–Müller GHI handling (twin entries cannot transpose → per-path
+re-search) and race-leaf evaluation dominates (85–97 % of df-pn nodes). FDFPN
+dynamic widening (Stage 2) won back 2.0× nodes / 2.7× time on 5×5-w2 but
+remains far behind AB. The engine is exact and fully gated (df-pn == AB on
+complete reachable graphs; the GHI-off ablation provably returns wrong values
+on 5/891 repetition-heavy positions, pinned in `tests/dfpn_exact.rs`), so it
+stays as an independent **cross-check engine** (`QS_ENGINE=dfpn`) — not the
+production path. **AB + theorem features remains the production engine.**
+
+### Frontier assessment (2026-06-10)
+
+- **Solved:** 6×5 W0/W1/W2/W3 = Loss (W3 new, theorem-ON build, ~49 min @ 8
+  threads under load).
+- **In flight:** 6×5 W4 on the pre-theorem baseline build (isolated worktree,
+  6 h cap) — TBD_W4_STATUS
+- **Next:** re-attempt W4 with the theorem build once the box frees up; the
+  remaining ladder (W4, W5 ≈ parity transition) is where the T4 race bounds
+  should bite hardest (deep wall-exhaustion layers dominate); pair with a
+  ≥ 64 GB box to remove the swap wall, which remains the binding constraint at
+  W4-class TT sizes.
