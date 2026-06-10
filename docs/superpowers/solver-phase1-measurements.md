@@ -467,3 +467,19 @@ the win is largest exactly where the most positions live in shallow/mid-game
 on bigger boards. The DSU filter is sound by planar duality (no admission
 authority — curve-closers always get the BFS); the writeup rule, implemented
 faithfully on posts, is sound-but-conservative.
+
+### CORRECTION (2026-06-10, user-caught): writeup-predicate mis-parse
+
+The `writeup skip%` column in the W5 table above is INVALID — our shadow
+implementation mis-parsed the writeup's rule as "border at ≥1 post OR wall
+contacts at ≥2", which wrongly fires on ~45 % of EMPTY-board candidates (a
+lone border-touching wall is a harmless peninsula and the writeup's author
+plainly never intended to check it). The faithful reading counts border and
+wall contacts TOGETHER toward the ≥2 threshold; under it, no empty-board
+candidate fires on boards wider than 2. Predicate + tests corrected (see
+movegen.rs module comment); the DSU columns are unaffected. The corrected
+writeup curve will be strictly better than the table above — the honest
+comparison is "exact connectivity vs faithful ≥2-contacts", where the DSU's
+remaining edge is firing only on SAME-component contacts (the writeup rule
+also fires on harmless different-component merges). Corrected numbers to be
+regenerated (local mid-rung run now; W5-scale pod re-run after the ladder).

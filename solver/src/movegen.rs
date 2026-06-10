@@ -293,24 +293,20 @@ impl PostDsu {
 // via `take_shadow_tally`. `QS_SHADOW=0` disables the shadow evaluation
 // entirely (zero-cost path).
 //
-// WRITEUP PREDICATE READING (fixed for the benchmark): the writeup says a
-// candidate "needs check iff the wall touches the board border OR contacts
-// existing walls at >= 2 of its three posts". Implemented faithfully on the
-// post lattice as:
-//   (a) BORDER: any of the candidate's 3 posts is a border post
-//       (pc in {0, w} or pr in {0, h});
-//   (b) CONTACT: at least 2 of the candidate's 3 posts COINCIDE with posts
-//       occupied by existing walls, where occupied = the post belongs to
-//       some placed wall's 3-post span (extreme AND center posts).
-// Ambiguity resolutions (documented and kept fixed):
-//   * "touches the border" is read on POSTS: a candidate triggers (a) iff one
-//     of its 3 posts lies ON the border lattice line, not merely near it.
-//   * "contacts" is read as post COINCIDENCE, not post adjacency: wall
-//     segments connect in the dual lattice only through shared posts, so a
-//     candidate post one lattice step away from an occupied post is NOT a
-//     contact.
-//   * the ">= 2" count is over the candidate's 3 DISTINCT posts — each post
-//     contributes at most 1 regardless of how many placed walls occupy it.
+// WRITEUP PREDICATE READING (corrected 2026-06-10; fixed for the benchmark):
+// the writeup says a candidate "needs check iff the wall touches the board
+// edge or existing walls at >= 2 contact points". FAITHFUL reading: border
+// and wall contacts count TOGETHER toward the >= 2 — a contact is a candidate
+// post that lies on the border lattice line OR coincides with a post occupied
+// by some placed wall's 3-post span; each of the candidate's 3 posts counts
+// at most once (border+occupied at the same post = one junction). Soundness:
+// a wall needs >= 2 attachment points to close any curve; one contact is a
+// peninsula/free-end extension. Consequence: on an empty board (any board
+// wider than 2) NO candidate fires — the original mis-reading ("border at
+// >= 1 post OR walls at >= 2") wrongly fired on ~45% of empty-board
+// candidates and inflated wu_fall at low density.
+// Other resolutions (unchanged): "contacts" = post COINCIDENCE, not
+// adjacency (wall segments connect only through shared posts).
 // ---------------------------------------------------------------------------
 
 /// Wall-density buckets: bucket = total placed walls = `2W - walls_left[0] -
@@ -418,16 +414,26 @@ fn occupied_posts(b: &Board, s: &State) -> u128 {
 /// SHADOW ONLY: the writeup predicate (see the module-level reading above) —
 /// would the writeup's legality filter send this candidate to the BFS?
 /// Evaluated, never acted on.
+///
+/// FAITHFUL READING (corrected): "touches {board edge ∪ existing walls} at
+/// >= 2 contact points" — the border and wall contacts are counted TOGETHER,
+/// one contact per candidate post (a post that is both border and occupied
+/// still counts once: it is a single curve-attachment junction). A single
+/// contact (lone border touch = peninsula; lone wall touch = free-end
+/// extension) can never close a curve, so the writeup correctly skips it —
+/// on an empty board no candidate reaches 2 contacts on boards wider than 2,
+/// so the predicate (rightly) never fires there. The earlier reading
+/// ("border at >=1 post OR walls at >=2") was OUR mis-parse and inflated
+/// wu_fall at low densities; kept here for the record, not in code.
 fn writeup_needs_bfs(b: &Board, occ: u128, wc: u8, wr: u8, horiz: bool) -> bool {
     let pw = b.w as u32 + 1;
-    let mut occ_hits = 0u32;
+    let mut contacts = 0u32;
     for (pc, pr) in wall_posts(wc, wr, horiz) {
-        if pc == 0 || pc == b.w || pr == 0 || pr == b.h {
-            return true; // (a) border post
-        }
-        occ_hits += (occ >> (pr as u32 * pw + pc as u32) & 1) as u32;
+        let border = pc == 0 || pc == b.w || pr == 0 || pr == b.h;
+        let occupied = (occ >> (pr as u32 * pw + pc as u32)) & 1 == 1;
+        contacts += (border || occupied) as u32;
     }
-    occ_hits >= 2 // (b) >= 2 posts coincide with occupied posts
+    contacts >= 2
 }
 
 /// Whether the DSU fast path is enabled (`QS_DSU_WALLS`, default ON; `=0`
