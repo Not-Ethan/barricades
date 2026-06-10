@@ -483,3 +483,22 @@ comparison is "exact connectivity vs faithful ≥2-contacts", where the DSU's
 remaining edge is firing only on SAME-component contacts (the writeup rule
 also fires on harmless different-component merges). Corrected numbers to be
 regenerated (local mid-rung run now; W5-scale pod re-run after the ladder).
+
+### Corrected legality-filter comparison (faithful predicate; 6×5-w3 local run, 1.85B nodes)
+
+| bucket | candidates | DSU skip% | writeup-faithful skip% | BFS ratio (wu/dsu) |
+|---|---|---|---|---|
+| 0 | 3,040 | 100.0% | **100.0%** | — |
+| 1 | 52.9K | 98.3% | 93.6% | 3.7× |
+| 2 | 538K | 96.1% | 84.4% | 4.0× |
+| 3 | 4.76M | 92.1% | 74.7% | 3.2× |
+| 4 | 28.5M | 85.7% | 64.9% | 2.5× |
+| 5 | 95.2M | 76.2% | 55.3% | 1.9× |
+
+Honest verdict, post-correction: the faithful writeup rule is *good* — perfect
+on empty boards (as its author surely knew) and skipping 55–94% throughout.
+The DSU's remaining, real advantage is firing only on SAME-component contacts:
+it runs **1.9–4× fewer flood fills** at every nonzero density, largest in the
+shallow/mid-game where most search positions live. Both filters are sound; the
+difference is pure precision. (W5-scale corrected table: pod re-run queued
+after the ladder.)
