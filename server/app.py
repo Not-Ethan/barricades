@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -15,6 +16,8 @@ from server.serialize import (
 )
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+_MOVE_LOCKS: dict = {}   # per-game asyncio.Lock; serialises EvE move application
 
 
 def _controller_names(controllers):
@@ -216,18 +219,29 @@ def create_app():
             await ws.close()
             return
 
+        lock = _MOVE_LOCKS.setdefault(gid, asyncio.Lock())
+
         async def next_move_msg():
-            if is_terminal(game.state):
-                return {"state": state_payload(game), "analysis": None,
-                        "done": True}
-            spec = game._specs[game.state.turn]
-            if isinstance(spec, str) and spec == "human":
-                return {"error": "side to move is human"}
-            agent = _make_controller_agent(spec)
-            analysis = await asyncio.to_thread(agent.analyze, game.state)
-            game.apply(analysis.best_move)
-            return {"state": state_payload(game),
-                    "analysis": analysis_to_dict(analysis)}
+            # Serialise analyze+apply per game. With two streams (or rapid double
+            # clicks) a move computed off-thread for an OLD state could otherwise be
+            # applied to a NEWER one, where it is illegal -> the crash we saw. Hold
+            # the lock across the await so each move reads the current state and
+            # applies atomically; validate defensively before sending.
+            async with lock:
+                if is_terminal(game.state):
+                    return {"state": state_payload(game), "analysis": None,
+                            "done": True}
+                spec = game._specs[game.state.turn]
+                if isinstance(spec, str) and spec == "human":
+                    return {"error": "side to move is human"}
+                agent = _make_controller_agent(spec)
+                analysis = await asyncio.to_thread(agent.analyze, game.state)
+                try:
+                    game.apply(analysis.best_move)
+                except ValueError as e:        # defense in depth
+                    return {"error": str(e)}
+                return {"state": state_payload(game),
+                        "analysis": analysis_to_dict(analysis)}
 
         try:
             while True:
