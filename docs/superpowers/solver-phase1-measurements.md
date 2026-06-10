@@ -422,3 +422,48 @@ as an independent cross-check (not yet run at W4 scale).
 
 Next: W5 (est. ~10x nodes ≈ 100-150B ≈ 7-10 h quiet at 8 threads) — does the
 P1 win persist, or does 6×5 oscillate like the writeup's anomalous 4×7?
+
+## 🏆 6×5 W5 = FIRST-PLAYER WIN — transition confirmed clean (2026-06-10, RunPod)
+
+`solve 6 5 5` on a 16-vCPU EPYC pod (128GB-class), build 2eab4b5 + env-shards
+(ac60ae0): **value=Win**, 38,241,078,677 nodes, **2,301 s (38 min)** at ~16.6M
+nodes/s; TT 454.6M entries / 84.7% of 16 GB; race cache 789.8M entries / 1.94M
+configs in 12 GB. First x86/Linux production result — all 78 gate tests passed
+on the pod before the run.
+
+**6×5 ladder so far: W0–W3 = second-player win; W4, W5 = FIRST-player win.**
+The parity→tempo transition at W4 is *clean* (no oscillation through W5) —
+6×5 behaves like 5×5 (single flip), not like the writeup's anomalous 4×7.
+
+The M1's W5 attempts both died of *system* memory exhaustion (40.4B nodes in
+78 min on the final try, RSS bounded at 1.55 GB exactly as capped — the host,
+not the solver, ran dry). Calibration value: local W5 lower bound >40B nodes.
+
+### Legality-filter shadow benchmark (one production W5 run, 16.77B candidates)
+
+bucket = walls already placed; skip% = candidates cleared WITHOUT a flood fill:
+
+| bucket | candidates | DSU skip% | writeup skip% |
+|---|---|---|---|
+| 0 | 3,880 | **100.0%** | 55.0% |
+| 1 | 31,837 | 98.6% | 54.2% |
+| 2 | 228K | 96.5% | 51.4% |
+| 3 | 1.62M | 92.8% | 47.0% |
+| 4 | 11.5M | 86.6% | 41.6% |
+| 5 | 71.5M | 77.1% | 35.9% |
+| 6 | 365M | 65.3% | 30.6% |
+| 7 | 2.08B | 51.3% | 25.3% |
+| 8 | 6.04B | 36.4% | 15.7% |
+| 9 | 8.20B | 22.7% | 11.1% |
+
+Totals: DSU ran 11.34B flood fills vs the writeup predicate's would-be 14.24B
+(2.9B avoided, ~20% fewer), at a cost of 158B `find`s + 53.7B `union`s (~14 ops
+per candidate — each orders of magnitude cheaper than a fill). Notable shape:
+(a) on sparse boards DSU is near-perfect while the writeup's border rule
+already fires on half of an EMPTY board's candidates (bucket 0: 55% vs 100%);
+(b) both filters converge as the board saturates — at high density most walls
+genuinely close curves, so the *exactness* of "closes a curve" matters less;
+the win is largest exactly where the most positions live in shallow/mid-game
+on bigger boards. The DSU filter is sound by planar duality (no admission
+authority — curve-closers always get the BFS); the writeup rule, implemented
+faithfully on posts, is sound-but-conservative.
