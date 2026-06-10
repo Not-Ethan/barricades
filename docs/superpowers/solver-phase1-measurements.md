@@ -502,3 +502,12 @@ it runs **1.9–4× fewer flood fills** at every nonzero density, largest in the
 shallow/mid-game where most search positions live. Both filters are sound; the
 difference is pure precision. (W5-scale corrected table: pod re-run queued
 after the ladder.)
+
+## 6×5 W6 = FIRST-PLAYER WIN (2026-06-10, RunPod)
+
+`solve 6 5 6`: **value=Win**, 39,991,233,989 nodes, 4,193 s (70 min, 16 threads).
+TT saturated (100% of 16 GiB) — rate halved in the tail; W7+ relaunched with a
+64 GiB TT + 24 GiB race cache (the pod has 251 GB).
+
+**6×5 ladder: W0–W3 = P2 win | W4–W6 = P1 win.** Transition at W4 is monotone
+through W6 — tempo dominance holds; no 4×7-style oscillation.
