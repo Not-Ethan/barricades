@@ -68,6 +68,28 @@ fn main() -> ExitCode {
     let board = Board::new(w, h, walls);
     let start = board.initial();
 
+    // Provenance line (stderr): record the full effective config at startup so
+    // every redirected run log is self-describing — which build knobs, caps,
+    // and threads produced this result. Observability only.
+    {
+        let env_or = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        eprintln!(
+            "[cfg] board={}x{} walls={} engine={} threads={} tt_mb={} race_mb={} \
+             t4={} footprint={} progress_secs={} pid={}",
+            w,
+            h,
+            walls,
+            env_or("QS_ENGINE", "ab"),
+            env_or("QS_THREADS", "auto"),
+            env_or("QS_TT_MB", "2048"),
+            env_or("QS_RACE_MB", "1024"),
+            env_or("QS_T4", "0"),
+            env_or("QS_FOOTPRINT", "0"),
+            env_or("QS_PROGRESS_SECS", "30"),
+            std::process::id(),
+        );
+    }
+
     // Engine selection: `QS_ENGINE=dfpn` runs the df-pn engine (Stage 1);
     // anything else (default) runs the verified alpha-beta solver, which
     // remains the differential oracle.

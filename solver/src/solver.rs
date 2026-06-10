@@ -608,6 +608,13 @@ struct Worker<'a> {
     stop: &'a AtomicBool,
     /// This worker's node count (summed into `Solver::nodes` after the join).
     nodes: u64,
+    /// Shared live node counter for the progress heartbeat (observability
+    /// only). Workers publish their local `nodes` in coarse batches (every
+    /// ~1M nodes) so the monitor can report real-time throughput. Never read
+    /// by the search itself — exactness-neutral by construction.
+    live_nodes: &'a AtomicU64,
+    /// How much of `nodes` has already been published to `live_nodes`.
+    flushed_nodes: u64,
     /// Theorem-4 fire count for this worker (summed into `Solver::t4_fires`).
     t4_fires: u64,
     /// Theorem-4 cutoff count for this worker (summed into `Solver::t4_cutoffs`).
@@ -1033,6 +1040,14 @@ impl<'a> Solver<'a> {
         // publish nothing. Guarded by a mutex (written at most `nthreads` times).
         let results: Mutex<Vec<(Value, u64)>> = Mutex::new(Vec::new());
         let total_nodes = AtomicU64::new(0);
+        // Observability: live node counter (batch-published by workers) + the
+        // heartbeat interval. QS_PROGRESS_SECS=0 disables; default 30s. The
+        // monitor prints to stderr so redirected run logs show live progress.
+        let live_nodes = AtomicU64::new(0);
+        let progress_secs: u64 = std::env::var("QS_PROGRESS_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(30);
         let total_t4_fires = AtomicU64::new(0);
         let total_t4_cutoffs = AtomicU64::new(0);
         let total_fp_attempts = AtomicU64::new(0);
@@ -1054,11 +1069,53 @@ impl<'a> Solver<'a> {
         let fp_defer = self.fp_defer;
         let b = self.b;
 
+        // Heartbeat monitor handle slot — declared OUTSIDE the scope so worker
+        // borrows of it satisfy the scoped-thread lifetime.
+        let mut mon_slot: Option<std::thread::Thread> = None;
         std::thread::scope(|scope| {
+            // Heartbeat monitor (observability only). Exits when `stop` is set;
+            // completing workers `unpark()` it so micro-solves (tests run
+            // thousands) pay ~zero latency instead of a sleep quantum.
+            mon_slot = if progress_secs > 0 {
+                let stop = &stop;
+                let live_nodes = &live_nodes;
+                let tt_hb = tt;
+                let race_hb = race_tt;
+                let h = scope.spawn(move || {
+                    let t0 = std::time::Instant::now();
+                    let mut last_nodes = 0u64;
+                    let mut last_t = 0u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::park_timeout(std::time::Duration::from_millis(250));
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let el = t0.elapsed().as_secs();
+                        if el < last_t + progress_secs {
+                            continue;
+                        }
+                        let n = live_nodes.load(Ordering::Relaxed);
+                        let rate = (n - last_nodes) / (el - last_t).max(1);
+                        let (ttl, ttc) = (tt_hb.len(), tt_hb.capacity());
+                        eprintln!(
+                            "[hb] t={el}s nodes={n} ({rate}/s) tt={ttl}/{ttc} ({:.1}%) race_entries={}",
+                            100.0 * ttl as f64 / ttc.max(1) as f64,
+                            race_hb.len()
+                        );
+                        last_nodes = n;
+                        last_t = el;
+                    }
+                });
+                Some(h.thread().clone())
+            } else {
+                None
+            };
+            let mon_thread = &mon_slot;
             for tid in 0..nthreads {
                 let stop = &stop;
                 let results = &results;
                 let total_nodes = &total_nodes;
+                let live_nodes = &live_nodes;
                 let total_t4_fires = &total_t4_fires;
                 let total_t4_cutoffs = &total_t4_cutoffs;
                 let total_fp_attempts = &total_fp_attempts;
@@ -1086,6 +1143,8 @@ impl<'a> Solver<'a> {
                         tid,
                         stop,
                         nodes: 0,
+                        live_nodes,
+                        flushed_nodes: 0,
                         t4_fires: 0,
                         t4_cutoffs: 0,
                         fp_attempts: 0,
@@ -1095,6 +1154,9 @@ impl<'a> Solver<'a> {
                         aborted: false,
                     };
                     let v = worker.ab(s, ceiling, 0, Value::Loss, Value::Win);
+                    // Publish the unflushed tail so the heartbeat's final
+                    // reading matches the true total (observability only).
+                    live_nodes.fetch_add(worker.nodes - worker.flushed_nodes, Ordering::Relaxed);
                     total_nodes.fetch_add(worker.nodes, Ordering::Relaxed);
                     total_t4_fires.fetch_add(worker.t4_fires, Ordering::Relaxed);
                     total_t4_cutoffs.fetch_add(worker.t4_cutoffs, Ordering::Relaxed);
@@ -1106,6 +1168,11 @@ impl<'a> Solver<'a> {
                         // A completed full-window root search: its value is the
                         // exact game value. Signal peers to stop and record it.
                         stop.store(true, Ordering::Relaxed);
+                        // Wake the heartbeat monitor so it exits immediately
+                        // (micro-solves must not pay its park quantum).
+                        if let Some(t) = mon_thread {
+                            t.unpark();
+                        }
                         results.lock().expect("results mutex poisoned").push((v, worker.nodes));
                     }
                 });
@@ -1153,6 +1220,7 @@ impl<'a> Solver<'a> {
         let walls = self.b.walls as u32;
         let ceiling = 4 * (w + h) + 2 * walls + 8;
         let stop = AtomicBool::new(false);
+        let live_nodes = AtomicU64::new(0); // hook runs unmonitored; sink only
         let mut worker = Worker {
             b: self.b,
             tt: self.tt.as_ref(),
@@ -1173,6 +1241,8 @@ impl<'a> Solver<'a> {
             tid: 0,
             stop: &stop,
             nodes: 0,
+            live_nodes: &live_nodes,
+            flushed_nodes: 0,
             t4_fires: 0,
             t4_cutoffs: 0,
             fp_attempts: 0,
@@ -1214,6 +1284,14 @@ impl<'a> Worker<'a> {
         }
         // Profiling: count every internal node entered (instrumentation only).
         self.nodes += 1;
+        // Heartbeat publishing: flush the local count to the shared live
+        // counter in ~1M-node batches (observability only; one relaxed atomic
+        // add per million nodes is unmeasurable).
+        if self.nodes - self.flushed_nodes >= 1 << 20 {
+            self.live_nodes
+                .fetch_add(self.nodes - self.flushed_nodes, Ordering::Relaxed);
+            self.flushed_nodes = self.nodes;
+        }
         // Terminal: `winner` is the player who just moved (= 1 - turn). If that
         // is the side to move it's a Win, otherwise the side to move has lost.
         if let Some(p) = self.b.winner(s) {
