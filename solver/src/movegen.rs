@@ -494,6 +494,38 @@ pub fn legal_walls_bruteforce(b: &Board, s: &State) -> Vec<Move> {
     walls_inner(b, s)
 }
 
+/// BENCH ONLY (not wired into the engine): the writeup's legality filter as an
+/// ACTING fast path — skip the connectivity BFS for candidates with fewer than
+/// 2 contact points (faithful combined border+wall reading; sound: <2
+/// attachments cannot close a curve), run the BFS pair otherwise. Used by the
+/// `legality_bench` controlled experiment to time the writeup filter
+/// head-to-head against the DSU filter and the always-BFS baseline.
+pub fn legal_walls_writeup_bench(b: &Board, s: &State) -> Vec<Move> {
+    if s.walls_left[s.turn as usize] == 0 {
+        return Vec::new();
+    }
+    let occ = occupied_posts(b, s);
+    let mut out: Vec<Move> = Vec::new();
+    for &horiz in &[true, false] {
+        for wc in 0..b.w - 1 {
+            for wr in 0..b.h - 1 {
+                if overlaps(b, s, wc, wr, horiz) {
+                    continue;
+                }
+                if !writeup_needs_bfs(b, occ, wc, wr, horiz) {
+                    out.push(Move::Wall { wc, wr, horiz });
+                    continue;
+                }
+                let s2 = with_wall_bit(b, s, wc, wr, horiz);
+                if b.has_path(&s2, 0) && b.has_path(&s2, 1) {
+                    out.push(Move::Wall { wc, wr, horiz });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// `legal_walls` with the DSU-on-posts fast path. Same candidate iteration
 /// order as `walls_inner`, so the returned ordering is identical; only the
 /// per-candidate BFS is (soundly) skipped when the wall closes no curve.
