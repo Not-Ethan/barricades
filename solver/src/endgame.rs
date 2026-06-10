@@ -138,12 +138,19 @@ fn config_bytes(n: usize) -> usize {
 /// PROBE takes an exclusive lock), race reads here take a SHARED `RwLock` read
 /// lock, so readers never block readers regardless of shard count. Shards only
 /// need to (a) spread the rare insert/evict write-lock stalls and (b) split the
-/// cache-line traffic on the per-shard LRU clock atomics. 16 = 2x the 8
-/// lazy-SMP workers already makes a same-shard write collision unlikely, while
-/// keeping each shard's budget slice (`QS_RACE_MB / 16`) twice as coarse as 32
-/// shards would — which matters because eviction is WHOLE-config: coarser
-/// slices retain more configs per shard before evicting at small caps.
-const RACE_SHARDS: usize = 16;
+/// cache-line traffic on the per-shard LRU clock atomics. The default (64)
+/// keeps same-shard write collisions unlikely up to ~32 lazy-SMP workers
+/// (cloud-class CPU pods); shards are cheap structs, so the overhead at 8
+/// local threads is negligible. Env `QS_RACE_SHARDS` overrides (rounded up to
+/// a power of two) — lower it (e.g. 16) if running tiny budgets where coarser
+/// per-shard slices retain more whole configs before evicting.
+fn race_shards() -> usize {
+    std::env::var("QS_RACE_SHARDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 1024).next_power_of_two())
+        .unwrap_or(64)
+}
 
 /// Bounded, exact, config-granular LRU race memo, SHARDED by config key, with
 /// interior mutability so it can be shared (`&self`) across the parallel search
@@ -205,9 +212,10 @@ impl RaceTt {
     /// the shards (test hook for the tiny-cap eviction-stress gate; `Default`
     /// funnels `QS_RACE_MB` here).
     pub fn with_cap_mb(mb: usize) -> RaceTt {
+        let nshards = race_shards();
         let cap_bytes = mb.max(1).saturating_mul(1024 * 1024);
-        let shard_cap_bytes = (cap_bytes / RACE_SHARDS).max(1);
-        let shards = (0..RACE_SHARDS)
+        let shard_cap_bytes = (cap_bytes / nshards).max(1);
+        let shards = (0..nshards)
             .map(|_| Shard {
                 clock: AtomicU64::new(0),
                 inner: RwLock::new(ShardInner {
@@ -234,7 +242,8 @@ impl RaceTt {
         x ^= x >> 30;
         x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
         x ^= x >> 31;
-        &self.shards[(x as usize) & (RACE_SHARDS - 1)]
+        // shards.len() is a power of two by construction (race_shards()).
+        &self.shards[(x as usize) & (self.shards.len() - 1)]
     }
 
     /// Total number of cached pawn-state entries across all resident configs of
