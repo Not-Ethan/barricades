@@ -19,7 +19,9 @@
 //!   * df-pn only: `QS_DFPN_MB` (least-work TT MiB, default 1024), `QS_EPS`
 //!     (1+ε trick, default 0.25), `QS_DFPN_H=0` (disable df-pn+ leaf init),
 //!     `QS_DFPN_LOOP_CAP`, `QS_DFPN_SIM_BUDGET`, `QS_DFPN_FALLBACK_MB`
-//!     (embedded AB fallback TT).
+//!     (embedded AB fallback TT), and FDFPN dynamic widening (Stage 2):
+//!     `QS_DFPN_WIDEN=0` disables, `QS_DFPN_WIDEN_BASE` / `QS_DFPN_WIDEN_FRAC`
+//!     set the window (defaults 4 / 0.25).
 //!
 //! The parallel value is provably identical to the single-thread value (parallel
 //! alpha-beta over a shared TT is exact). `nodes` counts every internal node
@@ -71,14 +73,19 @@ fn main() -> ExitCode {
         } else {
             0.0
         };
+        let widen = match solver.widening() {
+            Some((base, frac)) => format!("base={base},frac={frac}"),
+            None => "off".to_string(),
+        };
         println!(
-            "W×H={}×{} walls={}  engine=dfpn  value={:?}  nodes={}  mid_nodes={}  race_nodes={}  \
+            "W×H={}×{} walls={}  engine=dfpn  widen={}  value={:?}  nodes={}  mid_nodes={}  race_nodes={}  \
              tt_entries={}  tt_capacity={}  tt_fill={:.1}%  tt_bytes={}  rep_hits={}  twins={}  \
              sims={}  sim_nodes={}  sim_verified={}  fallbacks={} (child={} node={} twin={} root={})  \
              race_entries={}  time={:.3}s",
             w,
             h,
             walls,
+            widen,
             value,
             st.total_nodes(),
             st.nodes,

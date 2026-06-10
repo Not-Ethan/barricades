@@ -2,7 +2,7 @@
 //! `Solver` (which stays intact as the differential oracle).
 //!
 //! This module implements depth-first proof-number search (Nagai 2002) with
-//! three published enhancements, each followed precisely:
+//! four published enhancements, each followed precisely:
 //!
 //!   1. **Kishimoto–Müller GHI handling** (AAAI-04, "A General Solution to the
 //!      Graph History Interaction Problem"): 64-bit path signatures per TT
@@ -22,6 +22,20 @@
 //!      of `CLUSTER` cells; on overflow the entry with the least accumulated
 //!      subtree work is evicted. Eviction is exactness-neutral for the VALUE
 //!      (a missing entry only forces re-search; see the soundness notes).
+//!   4. **FDFPN dynamic widening** (Henderson, "Playing and Solving the Game
+//!      of Hex", 2010 — move-limited df-pn): at each node, only the SOLVED
+//!      children plus the first `base + ceil(fraction · live)` UNSOLVED
+//!      children in move order are *considered* — combined into the node's
+//!      pn/dn and eligible for selection — where `live` is the number of
+//!      currently-unsolved children. This fixes proof-number search's
+//!      degeneration toward BFS under large near-uniform branching (Quoridor's
+//!      ~`2(W-1)(H-1)` wall moves): a fresh node no longer inflates its
+//!      parent's disproof sum by the full branching factor. Each (dis)proof of
+//!      a considered child admits the next hidden one, so EVERY child is
+//!      eventually considered — exactness is preserved (see the widening
+//!      soundness notes at `mid`). `base`/`fraction` default 4 / 0.25, env
+//!      `QS_DFPN_WIDEN_BASE` / `QS_DFPN_WIDEN_FRAC`; `QS_DFPN_WIDEN=0`
+//!      disables widening entirely.
 //!
 //! # Game-value semantics (MUST match the alpha-beta solver)
 //!
@@ -172,6 +186,16 @@ const DEFAULT_DFPN_MB: usize = 1024;
 /// Default ε numerator over 1024 for the 1+ε trick: 256/1024 = 1/4, the value
 /// Pawlewicz & Lew found empirically best for df-pn.
 const DEFAULT_EPS_NUM: u64 = 256;
+
+/// Default FDFPN widening `base` (`QS_DFPN_WIDEN_BASE`): unsolved children
+/// always considered regardless of how few live siblings remain. At least 1
+/// (a node must always be able to make progress through a visible child).
+const DEFAULT_WIDEN_BASE: usize = 4;
+
+/// Default FDFPN widening `fraction` numerator over 1024
+/// (`QS_DFPN_WIDEN_FRAC`): 256/1024 = 0.25 of the live (unsolved) children
+/// are considered on top of `base`.
+const DEFAULT_WIDEN_FRAC_NUM: u64 = 256;
 
 /// Default per-`mid`-call expansion-loop watchdog (`QS_DFPN_LOOP_CAP`).
 /// Non-root only — the root call legitimately loops once per top-level
@@ -541,6 +565,20 @@ struct Child {
     pn: u64,
     dn: u64,
     dep: bool,
+    /// FDFPN: this child is currently OUTSIDE the widening window — excluded
+    /// from pn/dn combination and from selection, and not re-evaluated this
+    /// iteration. Recomputed every `mid` loop iteration. A hidden child is
+    /// always unsolved-as-last-known (solved children are never hidden).
+    hidden: bool,
+}
+
+impl Child {
+    /// (Dis)proven for the question, as last known. Solved child values are
+    /// permanent within their parent `mid` call (see the widening notes).
+    #[inline]
+    fn is_solved(&self) -> bool {
+        self.pn == 0 || self.dn == 0
+    }
 }
 
 /// The df-pn exact solving engine. Borrows the `Board`; owns its least-work
@@ -560,6 +598,12 @@ pub struct DfpnSolver<'a> {
     sim_budget: u64,
     /// Df-pn+ leaf initialization from the distance heuristic (`QS_DFPN_H`).
     use_h: bool,
+    /// FDFPN dynamic widening master switch (`QS_DFPN_WIDEN`, default on).
+    widen: bool,
+    /// FDFPN `base`: unsolved children always considered (`≥ 1`).
+    widen_base: usize,
+    /// FDFPN `fraction` numerator over 1024.
+    widen_frac_num: u64,
     /// GHI machinery master switch. `true` in ALL real use; `false` exists
     /// ONLY so the test suite can demonstrate that a naive (GHI-ignoring)
     /// df-pn actually mis-evaluates positions our machinery gets right.
@@ -619,6 +663,20 @@ impl<'a> DfpnSolver<'a> {
             .map(|e| (e * 1024.0).round() as u64)
             .unwrap_or(DEFAULT_EPS_NUM);
         let use_h = std::env::var("QS_DFPN_H").map(|v| v != "0").unwrap_or(true);
+        let widen = std::env::var("QS_DFPN_WIDEN")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        let widen_base = std::env::var("QS_DFPN_WIDEN_BASE")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&b| b >= 1)
+            .unwrap_or(DEFAULT_WIDEN_BASE);
+        let widen_frac_num = std::env::var("QS_DFPN_WIDEN_FRAC")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|&f| (0.0..=1.0).contains(&f))
+            .map(|f| (f * 1024.0).round() as u64)
+            .unwrap_or(DEFAULT_WIDEN_FRAC_NUM);
         DfpnSolver {
             b,
             tt: DfpnTt::with_capacity_mb(mb),
@@ -628,6 +686,9 @@ impl<'a> DfpnSolver<'a> {
             loop_cap: env_u64("QS_DFPN_LOOP_CAP").unwrap_or(DEFAULT_LOOP_CAP),
             sim_budget: env_u64("QS_DFPN_SIM_BUDGET").unwrap_or(DEFAULT_SIM_BUDGET),
             use_h,
+            widen,
+            widen_base,
+            widen_frac_num,
             ghi: true,
             ab: None,
             ab_mb: env_u64("QS_DFPN_FALLBACK_MB")
@@ -638,6 +699,41 @@ impl<'a> DfpnSolver<'a> {
             sim_fail: FxHashSet::default(),
             twin_seen: FxHashSet::default(),
         }
+    }
+
+    /// Configure FDFPN dynamic widening programmatically (test/tuning hook;
+    /// `new`/`with_tt_mb` read the env knobs). `None` disables widening (all
+    /// children always considered — plain df-pn); `Some((base, fraction))`
+    /// enables it with the given window parameters. Widening is exactness-
+    /// neutral by construction; this switch exists for differential gating
+    /// and ON-vs-OFF measurement.
+    pub fn set_widening(&mut self, params: Option<(usize, f64)>) {
+        match params {
+            None => self.widen = false,
+            Some((base, frac)) => {
+                self.widen = true;
+                self.widen_base = base.max(1);
+                self.widen_frac_num = (frac.clamp(0.0, 1.0) * 1024.0).round() as u64;
+            }
+        }
+    }
+
+    /// Current FDFPN widening configuration `(base, fraction)`; `None` when
+    /// disabled (reporting).
+    pub fn widening(&self) -> Option<(usize, f64)> {
+        self.widen
+            .then_some((self.widen_base, self.widen_frac_num as f64 / 1024.0))
+    }
+
+    /// FDFPN window for `live` currently-unsolved children: how many unsolved
+    /// children (in move order) are considered this iteration. `usize::MAX`
+    /// when widening is disabled.
+    #[inline]
+    fn widen_limit(&self, live: usize) -> usize {
+        if !self.widen {
+            return usize::MAX;
+        }
+        self.widen_base + ((live as u64 * self.widen_frac_num).div_ceil(1024)) as usize
     }
 
     /// TEST-ONLY: disable the GHI machinery (repetition (dis)proofs are then
@@ -884,13 +980,54 @@ impl<'a> DfpnSolver<'a> {
         let mut stall: u32 = 0;
 
         loop {
-            // ---- Recompute child values and the node's pn/dn. ----
+            // ---- Recompute child values under the FDFPN widening window. ----
+            //
+            // Considered = every SOLVED child + the first `widen_limit(live)`
+            // UNSOLVED children in move order (`live` = children not yet known
+            // solved); the rest are `hidden` — skipped by evaluation,
+            // combination, and selection this iteration.
+            //
+            // Widening soundness:
+            //   * No false (dis)proof: if ANY child is hidden, then exactly
+            //     `limit ≥ base ≥ 1` considered children were FRESH-evaluated
+            //     unsolved, so the OR-node disproof sum (resp. AND-node proof
+            //     sum) over the considered set is ≥ 1 — `dn == 0` at OR /
+            //     `pn == 0` at AND can only arise with NO hidden children,
+            //     i.e. with every child genuinely (dis)proven. A `pn == 0` at
+            //     OR / `dn == 0` at AND comes from a considered child's own
+            //     (dis)proof — genuine by induction.
+            //   * Every child eventually considered (exactness/completeness):
+            //     solved children stop occupying window slots, so each
+            //     (dis)proof of a considered child admits the next hidden one;
+            //     fixed adjudications (repetition/terminal/race) are solved
+            //     from generation and thus NEVER hidden.
+            //   * Solved children are not re-evaluated: a solved value is
+            //     permanent within this call (fixed adjudications are
+            //     call-invariant, solved base entries are path-independent
+            //     facts, and a matched twin's path is invariant across the
+            //     call), and caching it also shields the value from benign TT
+            //     eviction between iterations.
+            let live = children.iter().filter(|c| !c.is_solved()).count();
+            let limit = self.widen_limit(live);
+            let mut fresh_unsolved = 0usize;
             for c in children.iter_mut() {
+                if c.is_solved() {
+                    c.hidden = false;
+                    continue;
+                }
+                if fresh_unsolved >= limit {
+                    c.hidden = true;
+                    continue;
+                }
+                c.hidden = false;
                 let state = c.state;
                 let (pn, dn, dep) = self.child_value(&state, c.cpack, c.fixed, c.h, ctx);
                 c.pn = pn;
                 c.dn = dn;
                 c.dep = dep;
+                if !c.is_solved() {
+                    fresh_unsolved += 1;
+                }
             }
             let (pn, dn) = Self::combine(or_node, &children);
 
@@ -1085,6 +1222,15 @@ impl<'a> DfpnSolver<'a> {
             } else {
                 (1, 1)
             };
+            // Initial pn/dn/dep: the fixed adjudication when there is one
+            // (all fixed values are SOLVED, so such children are visible to
+            // the widening window from the start and never re-evaluated),
+            // otherwise the unsolved df-pn+ leaf init (refreshed by
+            // `child_value` on first consideration).
+            let (pn0, dn0, dep0) = match fixed {
+                Some((p, d, dep)) => (p, d, dep),
+                None => (h.0, h.1, false),
+            };
             scored.push((
                 d_opp - d_self,
                 Child {
@@ -1093,9 +1239,10 @@ impl<'a> DfpnSolver<'a> {
                     key: self.key(cpack, attacker),
                     h,
                     fixed,
-                    pn: 1,
-                    dn: 1,
-                    dep: false,
+                    pn: pn0,
+                    dn: dn0,
+                    dep: dep0,
+                    hidden: false,
                 },
             ));
         }
@@ -1109,19 +1256,24 @@ impl<'a> DfpnSolver<'a> {
         out
     }
 
-    /// Node pn/dn from child values (saturating at `SAT` for unproven sums so
-    /// `INF` stays reserved for true (dis)proofs). Empty child lists give the
-    /// correct stuck-mover adjudication for free (`min ∅ = INF`, `Σ ∅ = 0`).
+    /// Node pn/dn from the CONSIDERED (non-hidden) child values (saturating at
+    /// `SAT` for unproven sums so `INF` stays reserved for true (dis)proofs).
+    /// Hidden (FDFPN-windowed-out) children are excluded; the widening
+    /// invariant — any hidden child implies ≥ 1 considered fresh-unsolved
+    /// child — keeps the all-(dis)proven sums honest (see `mid`). Empty child
+    /// lists give the correct stuck-mover adjudication for free
+    /// (`min ∅ = INF`, `Σ ∅ = 0`).
     fn combine(or_node: bool, children: &[Child]) -> (u64, u64) {
+        let vis = || children.iter().filter(|c| !c.hidden);
         if or_node {
-            let pn = children.iter().map(|c| c.pn).min().unwrap_or(INF);
-            let dn = Self::sat_sum(children.iter().map(|c| c.dn));
-            // All children disproven => dn == 0 (each dn 0); else if any child
-            // is unproven the sum is >= 1.
+            let pn = vis().map(|c| c.pn).min().unwrap_or(INF);
+            let dn = Self::sat_sum(vis().map(|c| c.dn));
+            // All children disproven => dn == 0 (each dn 0, none hidden); else
+            // if any considered child is unproven the sum is >= 1.
             (pn, dn)
         } else {
-            let pn = Self::sat_sum(children.iter().map(|c| c.pn));
-            let dn = children.iter().map(|c| c.dn).min().unwrap_or(INF);
+            let pn = Self::sat_sum(vis().map(|c| c.pn));
+            let dn = vis().map(|c| c.dn).min().unwrap_or(INF);
             (pn, dn)
         }
     }
@@ -1183,13 +1335,18 @@ impl<'a> DfpnSolver<'a> {
         }
     }
 
-    /// Best-child index and the second-best binding number (OR: pn, AND: dn).
-    /// Ties resolve to the earlier (better-ordered) child.
+    /// Best-child index and the second-best binding number (OR: pn, AND: dn)
+    /// over the CONSIDERED (non-hidden) children. Ties resolve to the earlier
+    /// (better-ordered) child. Called only on unsolved nodes, which always
+    /// have ≥ 1 considered unsolved child (binding number < `INF`).
     fn select(or_node: bool, children: &[Child]) -> (usize, u64) {
         let mut bi = 0usize;
         let mut best = INF;
         let mut second = INF;
         for (i, c) in children.iter().enumerate() {
+            if c.hidden {
+                continue;
+            }
             let v = if or_node { c.pn } else { c.dn };
             if v < best {
                 second = best;

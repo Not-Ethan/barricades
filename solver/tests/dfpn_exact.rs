@@ -20,6 +20,13 @@
 //!   * `dfpn_vs_ab_nodes_5x5w2_6x5w2`: full-board agreement on 5x5-w2 and
 //!     6x5-w2 with node counts for both engines printed (run with
 //!     `--nocapture` to see the comparison).
+//!   * `fdfpn_*` (Stage 2): FDFPN dynamic widening gates. The whole suite
+//!     already runs with widening ON at the defaults (base=4, fraction=0.25);
+//!     these add (a) the default-config pin, (b) full-graph df-pn == AB with
+//!     widening OFF (the measurement baseline of the same binary), and (c)
+//!     full-graph df-pn == AB under the maximally aggressive single-child
+//!     window (base=1, fraction=0) — the hardest stress on the "every child
+//!     is eventually considered" exactness argument.
 //!
 //! All df-pn solvers here use explicit small TT budgets (`with_tt_mb`) so the
 //! suite stays memory-sane under parallel test threads; TT size is
@@ -68,12 +75,21 @@ fn fmt_state(s: &State) -> String {
 /// df-pn == AB on every non-terminal reachable position of the FULL graph.
 /// One shared solver pair (cross-call TT reuse is part of the contract being
 /// gated: base entries are path-independent, twins are signature-matched).
-fn check_full_graph(w: u8, h: u8, walls: u8, cap: usize) {
+/// `cfg` configures the df-pn engine before the sweep (widening variants).
+fn check_full_graph_with(
+    w: u8,
+    h: u8,
+    walls: u8,
+    cap: usize,
+    label: &str,
+    cfg: impl Fn(&mut DfpnSolver),
+) {
     let b = Board::new(w, h, walls);
     let states = reachable_graph(&b, cap);
     let mut ab = Solver::new(&b);
     ab.set_threads(1);
     let mut dfpn = DfpnSolver::with_tt_mb(&b, 64);
+    cfg(&mut dfpn);
     let mut checked = 0usize;
     for s in &states {
         if b.is_terminal(s) {
@@ -84,13 +100,13 @@ fn check_full_graph(w: u8, h: u8, walls: u8, cap: usize) {
         assert_eq!(
             got,
             want,
-            "df-pn disagrees with AB on {w}x{h} w{walls}: {}",
+            "df-pn [{label}] disagrees with AB on {w}x{h} w{walls}: {}",
             fmt_state(s)
         );
         checked += 1;
     }
     println!(
-        "full-graph {w}x{h} w{walls}: {} reachable, {} non-terminal checked, \
+        "full-graph {w}x{h} w{walls} [{label}]: {} reachable, {} non-terminal checked, \
          dfpn nodes={} rep_hits={} twins={} sims={} fallbacks={}",
         states.len(),
         checked,
@@ -103,6 +119,11 @@ fn check_full_graph(w: u8, h: u8, walls: u8, cap: usize) {
     assert!(checked > 100, "graph suspiciously small: {checked}");
 }
 
+/// Default engine configuration (env defaults: widening ON, base=4, frac=0.25).
+fn check_full_graph(w: u8, h: u8, walls: u8, cap: usize) {
+    check_full_graph_with(w, h, walls, cap, "default", |_| {});
+}
+
 #[test]
 fn dfpn_equals_ab_full_graph_3x3_w1() {
     check_full_graph(3, 3, 1, 2_000_000);
@@ -111,6 +132,45 @@ fn dfpn_equals_ab_full_graph_3x3_w1() {
 #[test]
 fn dfpn_equals_ab_full_graph_4x3_w2() {
     check_full_graph(4, 3, 2, 20_000_000);
+}
+
+/// Stage 2: the FDFPN defaults are wired as documented (the rest of the suite
+/// then gates the widened engine everywhere it runs the default config).
+#[test]
+fn fdfpn_widening_default_config() {
+    let b = Board::new(4, 4, 2);
+    let dfpn = DfpnSolver::with_tt_mb(&b, 8);
+    assert_eq!(
+        dfpn.widening(),
+        Some((4, 0.25)),
+        "FDFPN defaults changed (or QS_DFPN_WIDEN* is set in the test env)"
+    );
+}
+
+/// Stage 2: widening OFF (the ON-vs-OFF measurement baseline of the SAME
+/// binary) — df-pn == AB on every position of the full 4x3-w2 graph.
+#[test]
+fn fdfpn_widening_off_full_graph_4x3_w2() {
+    check_full_graph_with(4, 3, 2, 20_000_000, "widen-off", |d| {
+        d.set_widening(None);
+    });
+}
+
+/// Stage 2: the maximally aggressive single-unsolved-child window (base=1,
+/// fraction=0) — the hardest stress on "every child is eventually considered"
+/// (any unsoundly hidden child would flip some value in a FULL-graph sweep).
+#[test]
+fn fdfpn_widening_aggressive_window_full_graph_3x3_w1() {
+    check_full_graph_with(3, 3, 1, 2_000_000, "widen(1,0.0)", |d| {
+        d.set_widening(Some((1, 0.0)));
+    });
+}
+
+#[test]
+fn fdfpn_widening_aggressive_window_full_graph_4x3_w2() {
+    check_full_graph_with(4, 3, 2, 20_000_000, "widen(1,0.0)", |d| {
+        d.set_widening(Some((1, 0.0)));
+    });
 }
 
 /// Writeup-default known values.
