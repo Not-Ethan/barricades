@@ -77,6 +77,6 @@ the writeup's contact heuristic, measured under controls — see
 ## Resources
 
 Apple M1 16 GB (development, validation, W0–W4) + one RunPod cpu5m pod
-(16 vCPU/128 GB-class, $1.04/hr) for W5–W10: ≈ 8 pod-hours ≈ **$8.5** of a $15
+(16 vCPU/128 GB-class, $1.04/hr) for W5–W10: ≈ 8 pod-hours ≈ **$10.0** of a $15
 allocation, including a corrected-predicate benchmark re-run. Total wall-clock from
 "let's solve 6×5" to the full ladder: ~2 days, most of it verification by choice.

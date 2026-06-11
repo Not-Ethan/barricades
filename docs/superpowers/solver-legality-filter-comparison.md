@@ -108,3 +108,28 @@ save ~20 array ops per node vs the template copy.
 the value transition and is falling, as predicted (decisiveness + board
 saturation + factorial transposition merging). Ladder: P2 at W0–W3, P1 at
 W4–W7.
+
+## Final: corrected-predicate shadow table at W5 production scale (16.7B candidates)
+
+Re-run of the full 6×5-W5 solve with the FAITHFUL writeup predicate (pod, 37 min)
+— which also independently REPRODUCED W5 = Win (39.4B nodes) on the newest build:
+
+| bucket | candidates | DSU skip% | writeup-faithful skip% |
+|---|---|---|---|
+| 0 | 3,760 | 100.0% | **100.0%** |
+| 1 | 32.2K | 98.7% | 93.1% |
+| 2 | 253K | 96.4% | 84.5% |
+| 3 | 1.82M | 92.5% | 75.1% |
+| 4 | 12.5M | 86.2% | 65.6% |
+| 5 | 74.2M | 76.7% | 56.1% |
+| 6 | 382M | 65.4% | 46.8% |
+| 7 | 1.61B | 53.6% | 35.8% |
+| 8 | 4.77B | 35.7% | 26.5% |
+| 9 | 8.29B | 22.2% | 17.5% |
+
+In-search totals: DSU ran 10.41B fills vs the faithful writeup's would-be 11.62B
+(in-search gap ~1.12x at this density mix — the search lives deep, where the
+filters converge; the controlled wall-clock benchmark above remains the
+definitive timing comparison). Bucket 0 = zero writeup fires, confirming the
+faithful reading (and the reviewer's prediction that flagged our original
+mis-parse).
