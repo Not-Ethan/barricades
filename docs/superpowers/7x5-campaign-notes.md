@@ -1,18 +1,26 @@
-# 7×5 campaign notes (in progress)
+# 7×5 Quoridor: W0–W4 exactly solved (all P2); W5 open at ≥591 B nodes
 
-Live log of the 7×5 (area 35) solving campaign. Started 2026-06-11. Pod:
-32 vCPU / 128 GB-cgroup RunPod (cpu5g, $1.47/hr), pinned binary, same gated
-build as the 6×5 ladder.
+Campaign log, 2026-06-11 (one day). Pod: 32 vCPU / 128 GB-cgroup RunPod
+(cpu5g, $1.47/hr), pinned binary, same gated build as the 6×5 ladder.
+Campaign ended at the budget cap with W5 undecided.
 
-## Values so far
+## Values
 
-| W | value | nodes | wall-clock | status |
+| W | value | nodes | wall-clock (32 thr) | status |
 |---|---|---|---|---|
-| 3 | **P2** (Loss for mover) | 3.53 B | 32 s (32 thr) | solved |
-| 4 | **P2** (Loss for mover) | 225.8 B | 67 min (32 thr) | solved (attempt 5) |
-| 5 | ? | — | — | in progress |
+| 0 | **P2** | 15.2 K | 1 ms | solved |
+| 1 | **P2** | 1.81 M | 18 ms | solved |
+| 2 | **P2** | 74.8 M | 0.54 s | solved |
+| 3 | **P2** | 3.53 B | 32 s | solved |
+| 4 | **P2** | 225.8 B | 67 min | solved (attempt 5) |
+| 5 | open | **> 591 B** | timed out at 3.5 h | LOWER BOUND only |
 
-W0–W2 back-fill running (assumed cheaper than W3).
+7×5 (area 35) is exactly solved for W0–W4: **the second player wins at every
+wall count through 4**. W5 ran to 590.9 B nodes (TT 97% full, eviction
+active) without resolving — already > 15.5× the cost of 6×5's W5, with the
+~15×-per-rung area multiplier predicting it was within roughly an hour of
+finishing when the budget cap hit. No checkpointing exists, so the partial
+search is evidence only as a lower bound.
 
 **The transition does NOT track 6×5.** On 6×5 the flip to P1 happens at W4;
 on 7×5, W4 is still a P2 win — the transition is at W5 or later. Pattern so
@@ -92,8 +100,28 @@ throughput on 32 threads. `MALLOC_ARENA_MAX=16` keeps full speed (70 M nps,
 the fastest configuration tested) with bounded bloat. Always run an RSS
 logger (`memory.usage_in_bytes`, 60 s cadence).
 
+## What W5 needs (priced options for a future campaign)
+
+1. **Just more hours**: ~5–6 h at the proven v5 config (70 M nps early,
+   ~55 M sustained) ≈ $9–13 of pod time. Highest-confidence path.
+2. **Best-move byte + bigger TT**: the TT hit 97% — a 32–48 GiB TT (fits:
+   total RSS was 70 GB of 119 GiB) plus hash-move ordering
+   (`solver-tt-revisit-7x5.md`; must be A/B'd) could cut the wall-clock
+   meaningfully.
+3. **Checkpointing** (TT serialization) would de-risk long rungs — today a
+   timeout forfeits everything; this is the single most costly operational
+   gap (we burned ~830 B nodes across W4/W5 timeouts).
+4. **W6+**: if the ~15× multiplier holds against 6×5 (W6 = 40 B there),
+   expect ~600 B/rung in the plateau — each rung ≈ a W5. The transition rung
+   itself (wherever it is) plus one or two more would map the 7×5 column's
+   shape. The race-cache regime persists at least through W5 (race entries
+   pegged at every cap tried) — the bigger/cheaper race representation
+   remains the highest-value engine change for this board family.
+
 ## Raw artifacts
 
-- `docs/superpowers/raw/7x5_w3.txt` — W3 solve.
+- `docs/superpowers/raw/7x5_w0.txt` … `7x5_w4.txt` — the five solved rungs.
 - `docs/superpowers/raw/7x5_w4_v3_timeout.txt` — attempt 3's heartbeat trail
-  (the 221 B-node incomplete run; evidence for the lower bound).
+  (221 B-node incomplete run at the arena-capped throughput).
+- `docs/superpowers/raw/7x5_w5_timeout.txt` — the W5 lower-bound run
+  (590.9 B nodes, 3.5 h, unresolved).

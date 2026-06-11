@@ -1,0 +1,2 @@
+[cfg] board=7x5 walls=0 engine=ab threads=32 tt_mb=8192 race_mb=8192 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=600 pid=12337
+W×H=7×5 walls=0  value=Loss  threads=32  nodes=15240  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=0  dsu_falls=0  tt_entries=0  tt_capacity=2048  tt_fill=0.0%  tt_bytes=65536  entry_size=32  race_entries=1904  race_configs=1  time=0.001s

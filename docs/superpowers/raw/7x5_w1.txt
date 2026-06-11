@@ -1,0 +1,6 @@
+[cfg] board=7x5 walls=1 engine=ab threads=32 tt_mb=8192 race_mb=8192 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=600 pid=12377
+W×H=7×5 walls=1  value=Loss  threads=32  nodes=1813446  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=46513  dsu_falls=224  tt_entries=713  tt_capacity=8388608  tt_fill=0.0%  tt_bytes=268435456  entry_size=32  race_entries=1243073  race_configs=667  time=0.018s
+[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls
+[shadow] bucket     candidates       dsu_skip     dsu_fall        wu_skip      wu_fall       dsu_finds   dsu_unions
+[shadow]      0          12048          12048            0          12048            0           50200         7028
+[shadow]      1          34689          34465          224          32865         1824          151107        23520
