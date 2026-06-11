@@ -524,3 +524,10 @@ races barely occur before resolution. Node plateau holds (W5–W8: 38.2/40.0/
 `solve 6 5 9`: value=Win, 31,520,702,751 nodes, 5,870 s. Race cache: 946
 entries / 218 configs — the race endgame is virtually extinct at this budget.
 **Ladder: P2 at W0–W3 | P1 at W4–W9.** One rung (W10) from the complete board.
+
+## 🏆 6×5 W10 = FIRST-PLAYER WIN — LADDER COMPLETE (2026-06-10)
+
+`solve 6 5 10`: value=Win, 35,778,190,790 nodes, 6,647 s. race_entries=0 — at
+the full 20-wall budget no race position is ever reached. **6×5 is fully solved
+at every wall count: P2 at W0–W3, P1 at W4–W10.** See
+`docs/superpowers/6x5-solved-results.md` for the consolidated result.

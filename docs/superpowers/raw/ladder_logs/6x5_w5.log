@@ -1,0 +1,21 @@
+[cfg] board=6x5 walls=5 engine=ab threads=16 tt_mb=24576 race_mb=12288 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=300 pid=631120
+[hb] t=300s nodes=6795119982 (22650399/s) tt=133024559/536870912 (24.8%) race_entries=788768799
+[hb] t=600s nodes=10565360642 (12567468/s) tt=198383117/536870912 (37.0%) race_entries=789270337
+[hb] t=900s nodes=15361405925 (15986817/s) tt=271859103/536870912 (50.6%) race_entries=789110770
+[hb] t=1200s nodes=19756715181 (14651030/s) tt=325088357/536870912 (60.6%) race_entries=788432484
+[hb] t=1500s nodes=24565397483 (16028941/s) tt=374918762/536870912 (69.8%) race_entries=789173820
+[hb] t=1800s nodes=29583931763 (16728447/s) tt=411134251/536870912 (76.6%) race_entries=789275396
+[hb] t=2100s nodes=34928639025 (17815690/s) tt=440455605/536870912 (82.0%) race_entries=788890702
+W×H=6×5 walls=5  value=Win  threads=16  nodes=38241078677  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=5426944406  dsu_falls=11339976697  tt_entries=454595869  tt_capacity=536870912  tt_fill=84.7%  tt_bytes=17179869184  entry_size=32  race_entries=789757553  race_configs=1937387  time=2301.134s
+[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls
+[shadow] bucket     candidates       dsu_skip     dsu_fall        wu_skip      wu_fall       dsu_finds   dsu_unions
+[shadow]      0           3880           3880            0           2134         1746           16684         2522
+[shadow]      1          31837          31390          447          17255        14582          144511        24500
+[shadow]      2         228357         220429         7928         117329       111028         1102251       208590
+[shadow]      3        1616686        1500589       116097         759593       857093         8360714      1755328
+[shadow]      4       11541594        9990415      1551179        4796154      6745440        64528870     14952044
+[shadow]      5       71486701       55122646     16364055       25655958     45830743       436496583    111018240
+[shadow]      6      364549855      237959388    126590467      111689574    252860281      2464698381    685524408
+[shadow]      7     2077259150     1064895283   1012363867      524690296   1552568854     15774995370   4771608960
+[shadow]      8     6043941568     2197919069   3846022499      950640853   5093300715     54134866380  18001520838
+[shadow]      9     8196261475     1859301317   6336960158      910132824   7286128651     84809658105  30110436840
