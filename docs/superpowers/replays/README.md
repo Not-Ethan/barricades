@@ -8,6 +8,11 @@ loss); wall-phase plies are value-optimal with a natural-play heuristic —
 NOT guaranteed fastest/slowest (true wall-phase DTM needs a non-folding
 distance search; see pv.rs docs). W0–W4 extracted locally; W10 from the pod.
 
-Canonical game lengths: W0 6 plies (P1), W1 8 (P1), W2 18 (P1), W3 28 (P1),
-W4 23 (P0 — the transition game: P0 races 4 plies, then builds a 4-wall cage
-around P1's approach and walks the top of the board to (1,4)).
+Line lengths (W0 6 plies, W1 8, W2 18, W3 28, W4 23) are properties of the
+SELECTION HEURISTIC, not game-theoretic lengths — the loser's resistance is
+not provably maximal nor the winner provably fastest (these replays predate
+the race-DTM upgrade; full-game DTM needs a non-folding distance search).
+Do not read the length progression as a finding. The VALUES at every ply are
+exact. Qualitative content is real: e.g. the W4 transition game — P0 races
+4 plies, then converts tempo into a 4-wall cage around P1's corridor and
+walks the top of the board to (1,4).
