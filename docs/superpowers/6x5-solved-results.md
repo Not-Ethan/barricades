@@ -1,16 +1,16 @@
-# 6×5 Quoridor, Weakly Solved for 0-10 Walls
+# 6×5 Quoridor, Weakly Solved for 0-10 Walls (+ W15)
 
-**Date:** 2026-06-10 · **Branch:** `solver-and-az` (renamed from `az-bootstrap`) · **Raw logs:** `docs/superpowers/raw/ladder_logs/`
+**Date:** 2026-06-10 (W15 added 2026-06-11) · **Branch:** `solver-and-az` (renamed from `az-bootstrap`) · **Raw logs:** `docs/superpowers/raw/ladder_logs/`
 
 ## The result
 
 6×5 Quoridor (6 columns × 5 rows; player 0 starts bottom-center, races to the top
 row; standard jump and wall rules; W walls per player) is **exactly solved for every
-wall count W = 0…10**:
+wall count W = 0…10, plus W15** (the engine's packed-key maximum):
 
-| W (walls/player) | 0 | 1 | 2 | 3 | **4** | 5 | 6 | 7 | 8 | 9 | 10 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| **winner (perfect play)** | P2 | P2 | P2 | P2 | **P1** | P1 | P1 | P1 | P1 | P1 | P1 |
+| W (walls/player) | 0 | 1 | 2 | 3 | **4** | 5 | 6 | 7 | 8 | 9 | 10 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **winner (perfect play)** | P2 | P2 | P2 | P2 | **P1** | P1 | P1 | P1 | P1 | P1 | P1 | P1 |
 
 This is, to our knowledge, **the first board of area > 28 ever solved** (the prior
 frontier: grantslatton.com/solving-quoridor, area ≤ 28 on 128 GB), and the first
@@ -33,6 +33,7 @@ advantage takes over, here at **W4**) and shows none of 4×7's oscillation.
 | 8 | P1 | 32.4 B | 101 min | pod |
 | 9 | P1 | 31.5 B | 98 min | pod |
 | 10 | P1 | 35.8 B | 111 min | pod |
+| 15 | P1 | 36.0 B | 109 min | pod |
 
 **The cost-curve finding:** solving cost peaks just *past* the value transition
 (W5–W6) and then plateaus/declines — decisive positions prove cheaply (alpha-beta
@@ -41,6 +42,18 @@ merging absorbs the deeper budgets. Practical heuristic for solving such games:
 *budget compute around the transition rung, not the deepest rung.* A second
 structural observation: the race endgame **vanishes** with budget depth — W5 touched
 1.9 M race configs; W10 touched **zero**. Deep Quoridor is pure wall labyrinth.
+
+**The W15 saturation experiment (2026-06-11)** tested the plateau directly: if any
+exponential/factorial component were hiding in the wall count, jumping W10 → W15
+(+50% wall budget) should blow up the solve; if the board is *saturated*, cost
+should match the W7–W10 band. The answer is emphatic: **36.0 B nodes, 109 min —
+within 1% of W10** (35.8 B, 111 min), `race_configs = 0` (the endgame phase is
+never reached at any point in the proof). The wall count has stopped mattering:
+on a 30-cell board the search exhausts the useful wall geometry long before it
+exhausts either player's wall budget. W15 is the engine's packed-key ceiling
+(walls_left is a 4-bit field), so this closes the 6×5 column outright: P2 wins
+W0–W3, P1 wins W4 through at least W15, with the strongest possible evidence that
+P1 wins all higher W as well. Raw log: `docs/superpowers/raw/6x5_w15.txt`.
 
 ## Why the values can be trusted
 

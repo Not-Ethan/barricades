@@ -1,0 +1,77 @@
+# 7×5 campaign notes (in progress)
+
+Live log of the 7×5 (area 35) solving campaign. Started 2026-06-11. Pod:
+32 vCPU / 128 GB-cgroup RunPod (cpu5g, $1.47/hr), pinned binary, same gated
+build as the 6×5 ladder.
+
+## Values so far
+
+| W | value | nodes | wall-clock | status |
+|---|---|---|---|---|
+| 3 | **P2** (Loss for mover) | 3.53 B | 32 s (32 thr) | solved |
+| 4 | ? | ≥ 450 B and counting | — | in progress (see saga) |
+
+W0–W2 are assumed cheaper than W3 and will be back-filled for completeness.
+W3 = P2 is consistent with the 5×5 (transition at W5) and 6×5 (transition at
+W4) pattern — the 7×5 transition is at W4 or later.
+
+## The W4 saga — three attempts, two findings
+
+**Attempt 1** (TT 128 GiB + race 32 GiB): SIGKILL at 42 s. Root cause: the
+pod's **cgroup memory limit is 128 GB even though `free` reports the host's
+251 GB** — the ask exceeded the container limit outright. Operational rule:
+size caches against `/sys/fs/cgroup/memory/memory.limit_in_bytes`, never
+against `free`.
+
+**Attempt 2** (TT 64 GiB + race 24 GiB ≈ 88 GiB nominal): SIGKILL at 41 min,
+129 B nodes in. `memory.max_usage_in_bytes` == the 128 GB limit exactly — a
+true OOM despite ~31 GiB of nominal headroom. Two mechanisms account for the
+gap:
+1. **Hash scatter makes the TT fully resident at ~1% fill.** Entries land
+   uniformly across the array, so with 128 entries/4K-page, ~all pages are
+   touched after capacity/128 stores. A fixed-capacity TT's RSS cost is its
+   *capacity*, not its fill — capacity beyond need is pure waste.
+2. **Allocator arena bloat under race-cache LRU churn.** glibc grows up to
+   8×cores arenas; 32 threads churning billions of small alloc/frees can
+   hold tens of GB above live bytes.
+
+**Attempt 3** (TT 16 GiB + race 16 GiB + `MALLOC_ARENA_MAX=2`, RSS logged
+every 60 s): **stable at 29 GB RSS for 3.5 h** — flat curve, OOM fixed,
+which fingers arena bloat as attempt 2's main unaccounted consumer (the
+arena cap is the dominant delta). But the halved race cache cost ~3× in
+throughput: 65 M nps early → 18 M nps steady-state with the race cache
+pegged at its cap (1.07 B entries) and recompute churn replacing cached
+endgame values. Timed out at 221 B nodes (4 h cap) without finishing.
+
+**Attempt 4** (TT 16 GiB + race 64 GiB + `MALLOC_ARENA_MAX=2`): running.
+Predicted RSS ~70 GB against the 119 GiB limit. Rationale: the race cache is
+the proven throughput lever at low wall counts, and attempt 3's RSS data
+makes 64 GiB provably safe.
+
+### Findings worth keeping regardless of outcome
+
+- **7×5 W4 ≥ 450 B nodes** (sum of distinct partial searches; single-run
+  lower bound 221 B without completing). Compare: 6×5 W4 = 12.9 B *total*.
+  The transition rung's cost grew **≥ 35×** for a 5-cell area increase —
+  far steeper than the ~10× observed at W1 (6×5 → 7×5). The transition is
+  where area bites; the plateau may be gentler (see the 6×5 W15 result:
+  saturation flattens cost completely at high W).
+- **The race endgame dominates 7×5 low-W solves.** The race cache pegs at
+  any size tried (1.6 B entries at 24 GiB; 1.07 B at 16 GiB) and its size
+  sets the node rate almost linearly. This is the opposite regime from
+  deep-wall 6×5 (race vanishes by W10). If 7×5 W4 remains out of reach,
+  the highest-value engine change is a *bigger/cheaper race representation*,
+  not better wall-phase search.
+
+## Memory sizing rules (validated by the saga)
+
+For a 128 GB-cgroup, 32-thread pod: `TT_real ≈ TT_capacity` (hash scatter),
+`race_real ≈ 1.0–1.5× nominal` (with `MALLOC_ARENA_MAX=2`), keep total
+nominal ≤ 80 GiB. Always run with `MALLOC_ARENA_MAX=2` and an RSS logger
+(`memory.usage_in_bytes`, 60 s cadence).
+
+## Raw artifacts
+
+- `docs/superpowers/raw/7x5_w3.txt` — W3 solve.
+- `docs/superpowers/raw/7x5_w4_v3_timeout.txt` — attempt 3's heartbeat trail
+  (the 221 B-node incomplete run; evidence for the lower bound).
