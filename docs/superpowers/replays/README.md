@@ -8,6 +8,11 @@ loss); wall-phase plies are value-optimal with a natural-play heuristic —
 NOT guaranteed fastest/slowest (true wall-phase DTM needs a non-folding
 distance search; see pv.rs docs). W0–W4 extracted locally; W10 from the pod.
 
+Reproducibility: the W4 line was independently re-extracted on a 16-thread
+x86 pod (vs ARM locally) and the 23-ply move sequence is identical — PV
+selection is deterministic across architectures and thread counts because
+values are exact and the candidate ordering is fixed.
+
 Line lengths (W0 6 plies, W1 8, W2 18, W3 28, W4 23) are properties of the
 SELECTION HEURISTIC, not game-theoretic lengths — the loser's resistance is
 not provably maximal nor the winner provably fastest (these replays predate
