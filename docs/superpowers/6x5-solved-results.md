@@ -1,4 +1,4 @@
-# 6×5 Quoridor, Fully Solved — the First Area-30 Board
+# 6×5 Quoridor, Weakly Solved for 0-10 Walls
 
 **Date:** 2026-06-10 · **Branch:** `solver-and-az` (renamed from `az-bootstrap`) · **Raw logs:** `docs/superpowers/raw/ladder_logs/`
 
