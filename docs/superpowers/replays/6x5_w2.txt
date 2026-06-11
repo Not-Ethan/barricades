@@ -1,0 +1,239 @@
+[cfg] board=6x5 walls=2 engine=ab threads=auto tt_mb=1024 race_mb=400 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=0 pid=61256
+W×H=6×5 walls=2  value=Loss  threads=8  nodes=29981324  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=2199128  dsu_falls=159928  tt_entries=102469  tt_capacity=33554432  tt_fill=0.3%  tt_bytes=1073741824  entry_size=32  race_entries=25995646  race_configs=20914  time=1.187s
+[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls
+[shadow] bucket     candidates       dsu_skip     dsu_fall        wu_skip      wu_fall       dsu_finds   dsu_unions
+[shadow]      0           4160           4160            0           4160            0           17888         2704
+[shadow]      1          49177          48465          712          45964         3213          223187        37828
+[shadow]      2         405064         389936        15128         343419        61645         1954512       369660
+[shadow]      3        1900655        1756567       144088        1422679       477976         9831501      2064768
+[pv] extracting the canonical optimal line (warm-TT requeries)...
+
+=== canonical optimal line: 6x5 W2 ===
+     0   1   2   3   4   5  
+  4  ·   ·   ·   1   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+                           
+  0  ·   ·   ·   0   ·   · 
+
+ply   1  P0  →(3,1)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   1   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   0   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   2  P1  →(3,3)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   1   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   0   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   3  P0  →(3,2)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   1   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   4  P1  →(3,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   5  P0  H(2,0)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ───        
+  0  ·   ·   ·   ·   ·   · 
+
+ply   6  P1  →(4,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   ·   1   · 
+            ─── ───        
+  0  ·   ·   ·   ·   ·   · 
+
+ply   7  P0  H(4,0)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   ·   1   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply   8  P1  →(3,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply   9  P0  →(3,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  10  P1  H(2,3)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ───        
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  11  P0  →(4,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ───        
+  3  ·   ·   ·   ·   0   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  12  P1  H(4,3)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   ·   ·   ·   0   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  13  P0  →(3,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  14  P1  →(2,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   1   ·   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  15  P0  →(2,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   ·   0   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   1   ·   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  16  P1  →(1,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   ·   0   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   1   ·   ·   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  17  P0  →(1,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   0   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   1   ·   ·   ·   · 
+            ─── ─── ─── ───
+  0  ·   ·   ·   ·   ·   · 
+
+ply  18  P1  →(1,0)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  3  ·   0   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+            ─── ─── ─── ───
+  0  ·   1   ·   ·   ·   · 
+
+=== P1 wins after 18 plies ===

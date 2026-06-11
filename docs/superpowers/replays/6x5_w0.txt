@@ -1,0 +1,87 @@
+W×H=6×5 walls=0  value=Loss  threads=8  nodes=9751  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=0  dsu_falls=0  tt_entries=0  tt_capacity=1024  tt_fill=0.0%  tt_bytes=32768  entry_size=32  race_entries=1392  race_configs=1  time=0.000s
+
+=== canonical optimal line: 6x5 W0 ===
+     0   1   2   3   4   5  
+  4  ·   ·   ·   1   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+                           
+  0  ·   ·   ·   0   ·   · 
+
+ply   1  P0  →(3,1)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   1   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   0   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   2  P1  →(3,3)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   1   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   0   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   3  P0  →(3,2)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   1   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   4  P1  →(3,1)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   ·   ·   · 
+                           
+  2  ·   ·   ·   0   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   5  P0  →(3,3)   (value-to-move before: Loss)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   1   ·   · 
+                           
+  0  ·   ·   ·   ·   ·   · 
+
+ply   6  P1  →(3,0)   (value-to-move before: Win)
+     0   1   2   3   4   5  
+  4  ·   ·   ·   ·   ·   · 
+                           
+  3  ·   ·   ·   0   ·   · 
+                           
+  2  ·   ·   ·   ·   ·   · 
+                           
+  1  ·   ·   ·   ·   ·   · 
+                           
+  0  ·   ·   ·   1   ·   · 
+
+=== P1 wins after 6 plies ===
