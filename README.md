@@ -6,7 +6,7 @@ known frontier?* and *can an AlphaZero-style agent learn strong 9×9 play?*
 
 ## Headline result
 
-**6×5 Quoridor is **weakly solved** for every wall count — the first board of area > 28 with a known game value** (the prior frontier:
+**6×5 Quoridor is weakly solved for every wall count** — the first board of area > 28 with a known game value (the prior frontier:
 [Solving Quoridor](https://grantslatton.com/solving-quoridor), area ≤ 28):
 
 | walls per player | 0 | 1 | 2 | 3 | **4** | 5 | 6 | 7 | 8 | 9 | 10 |
