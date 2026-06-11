@@ -43,10 +43,18 @@ throughput: 65 M nps early → 18 M nps steady-state with the race cache
 pegged at its cap (1.07 B entries) and recompute churn replacing cached
 endgame values. Timed out at 221 B nodes (4 h cap) without finishing.
 
-**Attempt 4** (TT 16 GiB + race 64 GiB + `MALLOC_ARENA_MAX=2`): running.
-Predicted RSS ~70 GB against the 119 GiB limit. Rationale: the race cache is
-the proven throughput lever at low wall counts, and attempt 3's RSS data
-makes 64 GiB provably safe.
+**Attempt 4** (TT 16 GiB + race 64 GiB + `MALLOC_ARENA_MAX=2`): killed after
+36 min at **15 M nps** — *slower* than attempt 3 despite a 4× race cache.
+This refuted the "race-cache size = throughput" theory and exposed the real
+culprit: **`MALLOC_ARENA_MAX=2` serializes 32 allocation-heavy threads onto
+2 malloc arenas.** Both arena-capped runs (v3, v4) crawled at 15–18 M nps;
+the uncapped attempt 2 ran 54–65 M nps. The cap fixed the OOM by paying ~4×
+in throughput.
+
+**Attempt 5** (TT 16 GiB + race 24 GiB + `MALLOC_ARENA_MAX=16`): the
+compromise — enough arenas for parallel allocation, bounded bloat. First
+heartbeat: **70.4 M nps** (fastest yet), RSS 44.7 GB and stable. Throughput
+restored AND memory safe. Running.
 
 ### Findings worth keeping regardless of outcome
 
@@ -63,12 +71,15 @@ makes 64 GiB provably safe.
   the highest-value engine change is a *bigger/cheaper race representation*,
   not better wall-phase search.
 
-## Memory sizing rules (validated by the saga)
+## Memory & throughput rules (validated by the saga)
 
-For a 128 GB-cgroup, 32-thread pod: `TT_real ≈ TT_capacity` (hash scatter),
-`race_real ≈ 1.0–1.5× nominal` (with `MALLOC_ARENA_MAX=2`), keep total
-nominal ≤ 80 GiB. Always run with `MALLOC_ARENA_MAX=2` and an RSS logger
-(`memory.usage_in_bytes`, 60 s cadence).
+For a 128 GB-cgroup, 32-thread pod: `TT_real ≈ TT_capacity` (hash scatter —
+size the TT to *need*, not to available RAM), `race_real ≈ 1.0–1.5× nominal`,
+arena bloat ≈ tens of GB uncapped / negligible at `MALLOC_ARENA_MAX=16`.
+**Do NOT use `MALLOC_ARENA_MAX=2`** — it serializes allocation and costs ~4×
+throughput on 32 threads. `MALLOC_ARENA_MAX=16` keeps full speed (70 M nps,
+the fastest configuration tested) with bounded bloat. Always run an RSS
+logger (`memory.usage_in_bytes`, 60 s cadence).
 
 ## Raw artifacts
 
