@@ -9,11 +9,22 @@ build as the 6×5 ladder.
 | W | value | nodes | wall-clock | status |
 |---|---|---|---|---|
 | 3 | **P2** (Loss for mover) | 3.53 B | 32 s (32 thr) | solved |
-| 4 | ? | ≥ 450 B and counting | — | in progress (see saga) |
+| 4 | **P2** (Loss for mover) | 225.8 B | 67 min (32 thr) | solved (attempt 5) |
+| 5 | ? | — | — | in progress |
 
-W0–W2 are assumed cheaper than W3 and will be back-filled for completeness.
-W3 = P2 is consistent with the 5×5 (transition at W5) and 6×5 (transition at
-W4) pattern — the 7×5 transition is at W4 or later.
+W0–W2 back-fill running (assumed cheaper than W3).
+
+**The transition does NOT track 6×5.** On 6×5 the flip to P1 happens at W4;
+on 7×5, W4 is still a P2 win — the transition is at W5 or later. Pattern so
+far: 5×5 flips at W5, 6×5 at W4, 7×5 at ≥W5 — *not* monotone in area. A
+width-parity hypothesis fits: on odd-width boards the pawns face off in a
+shared center column and the second player's jump-parity advantage survives
+more wall budget; even-width boards break the face-off and the first
+player's tempo converts sooner. 7×7 (odd, area 49) would be the test, but
+is priced out of this campaign.
+
+**Cost scaling at fixed W (area 30 → 35):** W3 13×, W4 17.5× — call it
+~15× per rung. Extrapolation for W5: ~570 B nodes ≈ 2.3 h at 70 M nps.
 
 ## The W4 saga — three attempts, two findings
 

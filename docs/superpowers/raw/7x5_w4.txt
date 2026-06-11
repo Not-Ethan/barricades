@@ -1,0 +1,18 @@
+[cfg] board=7x5 walls=4 engine=ab threads=32 tt_mb=16384 race_mb=24576 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=600 pid=11729
+[hb] t=600s nodes=42231870059 (70386450/s) tt=73677033/536870912 (13.7%) race_entries=1599028228
+[hb] t=1200s nodes=76128160065 (56493816/s) tt=135649049/536870912 (25.3%) race_entries=1599307112
+[hb] t=1800s nodes=103951776866 (46372694/s) tt=161953236/536870912 (30.2%) race_entries=1599244447
+[hb] t=2400s nodes=129663421462 (42852740/s) tt=197468888/536870912 (36.8%) race_entries=1599496590
+[hb] t=3000s nodes=161787256997 (53539725/s) tt=249521120/536870912 (46.5%) race_entries=1599773199
+[hb] t=3600s nodes=198545379729 (61263537/s) tt=305606933/536870912 (56.9%) race_entries=1599839174
+W×H=7×5 walls=4  value=Loss  threads=32  nodes=225762242245  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=34250477060  dsu_falls=11395709176  tt_entries=343132451  tt_capacity=536870912  tt_fill=63.9%  tt_bytes=17179869184  entry_size=32  race_entries=1599854762  race_configs=1331572  time=4035.226s
+[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls
+[shadow] bucket     candidates       dsu_skip     dsu_fall        wu_skip      wu_fall       dsu_finds   dsu_unions
+[shadow]      0          10704          10704            0          10704            0           44600         6244
+[shadow]      1          58621          58221          400          55619         3002          255303        39720
+[shadow]      2         560395         550606         9789         492011        68384         2563809       441312
+[shadow]      3        6277098        6052806       224292        5017889      1259209        30319486      5744096
+[shadow]      4       63142028       58886032      4255996       45438584     17703444       323713788     67143852
+[shadow]      5      620731474      556280906     64450568      398291169    222440305      3410044470    773925024
+[shadow]      6     5067640534     4357391233    710249301     2825358207   2242282327     29700613602   7248846000
+[shadow]      7    39887765382    29271246552  10616518830    21660279721  18227485661    253186655178  66761679516
