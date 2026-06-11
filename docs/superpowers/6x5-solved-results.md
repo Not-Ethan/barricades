@@ -1,6 +1,6 @@
 # 6×5 Quoridor, Fully Solved — the First Area-30 Board
 
-**Date:** 2026-06-10 · **Branch:** `az-bootstrap` · **Raw logs:** `docs/superpowers/raw/ladder_logs/`
+**Date:** 2026-06-10 · **Branch:** `solver-and-az` (renamed from `az-bootstrap`) · **Raw logs:** `docs/superpowers/raw/ladder_logs/`
 
 ## The result
 

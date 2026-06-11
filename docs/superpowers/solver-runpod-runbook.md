@@ -17,7 +17,7 @@ bottleneck eliminated at e568006).
 **Steps:**
 1. Provision via the RunPod API/console (API key stays in env, never committed).
 2. `rsync -az --exclude target --exclude .git/objects ~/barricades root@POD:~/` (or
-   clone `az-bootstrap`).
+   clone `solver-and-az` (renamed from `az-bootstrap`)).
 3. `bash ~/barricades/scripts/runpod_solver_setup.sh` — toolchain, build, **full
    exactness gate suite** (any failure = stop), pins the binary.
 4. `tmux new -s ladder` then `bash ~/barricades/scripts/runpod_solver_ladder.sh 5 10`

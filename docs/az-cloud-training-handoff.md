@@ -1,6 +1,6 @@
 # Handoff: AlphaZero 9×9 Training — Cloud Campaign (RunPod)
 
-**Date:** 2026-06-10 · **Branch:** `az-bootstrap` · **Audience:** the agent taking over AZ
+**Date:** 2026-06-10 · **Branch:** `solver-and-az` (renamed from `az-bootstrap`) · **Audience:** the agent taking over AZ
 training. The solver effort (`solver/`, `smallboard/`) is a SEPARATE workstream owned by
 another session — read those dirs for reference only, do not modify them.
 
@@ -19,7 +19,7 @@ scale breaks the known training plateau (§4). Deliverables:
    final checkpoint synced back to the repo machine.
 4. A measured cost/throughput report (games/s on the pod vs the M1 baseline ~5–22/s).
 
-## 2. What exists and works (all on `az-bootstrap`, all tests green)
+## 2. What exists and works (all on `solver-and-az` (renamed from `az-bootstrap`), all tests green)
 
 ### The game
 Quoridor ("barricades") 9×9: move 1 step orthogonally (with straight/diagonal jump
@@ -126,7 +126,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 pip install maturin numpy torch --index-url https://download.pytorch.org/whl/cu124  # match pod CUDA
 
-# repo: clone/rsync the az-bootstrap branch (rsync from the dev machine or a git remote)
+# repo: clone/rsync the solver-and-az branch (rsync from the dev machine or a git remote)
 cd barricades/native && maturin develop --release && cd ..
 python -m pytest tests/ -q -k "native or endgame"     # gate 1: Rust crate on Linux
 ```
@@ -170,7 +170,7 @@ python scripts/campaign.py 100 1000 100 cuda 2>&1 | tee campaign_100k.log
   parallel workstream. `core/` and `native/` movegen semantics are frozen (oracle-
   validated); if a Linux build issue requires touching `native/`, keep diffs minimal
   and run the differential tests.
-- Commit your work (logs/doc/report, any port fixes) on `az-bootstrap` with clear
+- Commit your work (logs/doc/report, any port fixes) on `solver-and-az` (renamed from `az-bootstrap`) with clear
   `az:`-prefixed messages; never commit the API key or checkpoints >100 MB (rsync
   those, or use a release artifact).
 - Budget guardrail: confirm projected cost with the user if it exceeds ~$25.
