@@ -91,6 +91,28 @@ pub fn extract_pv(
             .collect();
         cands.sort_by_key(|(survives, score, _)| (-*survives, -*score));
 
+        // RACE PHASE (walls exhausted): exact DTM is available from a one-off
+        // wave retrograde — reorder candidates so the winner provably wins
+        // FASTEST and the loser provably loses SLOWEST. (Wall phase stays on
+        // the heuristic order: DTM there would need a non-folding distance
+        // search.) Value verification below remains the authority either way.
+        if s.walls_left == [0, 0] {
+            let dtm = crate::endgame::race_dtm_map(b, &s);
+            // Child dtm; missing entry (child is a Draw node) sorts last for
+            // winners and first for losers via a large sentinel.
+            let child_dtm = |m: &Move| -> i64 {
+                let t = apply(b, &s, *m);
+                dtm.get(&(t.pawn[0], t.pawn[1], t.turn))
+                    .map(|&(_, d)| d as i64)
+                    .unwrap_or(i64::MAX / 2)
+            };
+            if value == Value::Win {
+                cands.sort_by_key(|(_, _, m)| child_dtm(m)); // fastest win
+            } else {
+                cands.sort_by_key(|(_, _, m)| -child_dtm(m)); // slowest loss
+            }
+        }
+
         // Find the first value-preserving move in that order.
         let mut chosen: Option<(Move, State, Value)> = None;
         for (_, _, m) in &cands {
@@ -203,6 +225,42 @@ mod tests {
             let expected_winner = if root == Value::Win { 0u8 } else { 1u8 };
             assert_eq!(winner, expected_winner, "{w}x{h} W{walls}");
             assert_eq!(expect_p1, expected_winner == 0, "{w}x{h} W{walls} table");
+        }
+    }
+}
+
+#[cfg(test)]
+mod dtm_tests {
+    use super::*;
+
+    /// On a pure-race board the PV must follow exact DTM: the root's dtm
+    /// equals the line length, and dtm decreases by exactly 1 every ply.
+    #[test]
+    fn race_pv_is_dtm_optimal() {
+        for (w, h) in [(4u8, 4u8), (5, 5), (6, 5)] {
+            let b = Board::new(w, h, 0);
+            let start = b.initial();
+            let map = crate::endgame::race_dtm_map(&b, &start);
+            let (_, root_dtm) = map[&(start.pawn[0], start.pawn[1], start.turn)];
+            let mut solver = Solver::new(&b);
+            let (plies, winner) = extract_pv(&b, &mut solver, &start, 200);
+            assert!(winner.is_some(), "{w}x{h} race must terminate");
+            assert_eq!(
+                plies.len() as u32,
+                root_dtm,
+                "{w}x{h} W0: PV length must equal the exact game length (DTM)"
+            );
+            // dtm decreases by exactly 1 along the line.
+            let mut expect = root_dtm;
+            for ply in &plies {
+                expect -= 1;
+                if expect == 0 {
+                    break;
+                }
+                let k = (ply.after.pawn[0], ply.after.pawn[1], ply.after.turn);
+                let (_, d) = crate::endgame::race_dtm_map(&b, &ply.after)[&k];
+                assert_eq!(d, expect, "{w}x{h}: dtm must step down by 1");
+            }
         }
     }
 }

@@ -629,3 +629,117 @@ pub fn race_value(b: &Board, s: &State, tt: &RaceTt) -> (Value, u64) {
 
     (v, visited)
 }
+
+// ---------------------------------------------------------------------------
+// PV-ONLY: exact distance-to-mate (DTM) labeling of one frozen-wall race
+// component. The cached race path (`race_value`) deliberately stores VALUES
+// only; this standalone wave-retrograde recomputes the component WITH levels
+// for principal-variation replay, so race-phase PV plies can be provably
+// fastest-win / slowest-loss. Cost: one O(component) pass per query (~2K
+// nodes) — used a handful of times per replay, never by the search.
+// ---------------------------------------------------------------------------
+
+/// Exact (value, dtm) for every node of `s`'s frozen-race component, keyed by
+/// `(pawn0, pawn1, turn)`. `dtm` = plies to the forced end under optimal play
+/// by BOTH sides (winner minimizes, loser maximizes). Draw nodes are absent.
+///
+/// Wave-synchronous retrograde: terminals/stuck = Loss at dtm 0; a node
+/// becomes Win at wave d+1 the first time a Loss(d) child appears (min over
+/// winning children — wave order guarantees minimality); a node becomes Loss
+/// at wave d+1 when its LAST child finalizes (all Win), giving
+/// 1 + max(children) by the same wave argument.
+pub fn race_dtm_map(
+    b: &Board,
+    s: &State,
+) -> std::collections::HashMap<(u8, u8, u8), (Value, u32)> {
+    use std::collections::HashMap;
+    debug_assert_eq!(s.walls_left, [0, 0]);
+    // Forward-enumerate the reachable component.
+    let key = |t: &State| (t.pawn[0], t.pawn[1], t.turn);
+    let mut idx: HashMap<(u8, u8, u8), usize> = HashMap::new();
+    let mut nodes: Vec<State> = Vec::new();
+    let mut succs: Vec<Vec<usize>> = Vec::new();
+    let mut stack = vec![*s];
+    idx.insert(key(s), 0);
+    nodes.push(*s);
+    succs.push(Vec::new());
+    let mut steps = Vec::new();
+    while let Some(u) = stack.pop() {
+        let ui = idx[&key(&u)];
+        if b.winner(&u).is_some() {
+            continue; // terminal: no successors expanded
+        }
+        crate::movegen::legal_steps_into(b, &u, &mut steps);
+        let mut out = Vec::with_capacity(steps.len());
+        for &dest in &steps {
+            let mut t = u;
+            t.pawn[t.turn as usize] = dest;
+            t.turn ^= 1;
+            let vi = *idx.entry(key(&t)).or_insert_with(|| {
+                nodes.push(t);
+                succs.push(Vec::new());
+                stack.push(t);
+                nodes.len() - 1
+            });
+            out.push(vi);
+        }
+        succs[ui] = out;
+    }
+    // Predecessors + remaining-successor counters.
+    let n = nodes.len();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut remaining: Vec<u32> = vec![0; n];
+    for (u, ss) in succs.iter().enumerate() {
+        remaining[u] = ss.len() as u32;
+        for &v in ss {
+            preds[v].push(u);
+        }
+    }
+    // Seed wave 0: terminals (mover faces opponent-on-goal => Loss) and stuck.
+    let mut label: Vec<Option<(Value, u32)>> = vec![None; n];
+    let mut wave: Vec<usize> = Vec::new();
+    for (i, u) in nodes.iter().enumerate() {
+        if let Some(p) = b.winner(u) {
+            let v = if p == u.turn { Value::Win } else { Value::Loss };
+            label[i] = Some((v, 0));
+            wave.push(i);
+        } else if succs[i].is_empty() {
+            label[i] = Some((Value::Loss, 0));
+            wave.push(i);
+        }
+    }
+    // Wave-synchronous backward propagation.
+    let mut d = 0u32;
+    while !wave.is_empty() {
+        let mut next: Vec<usize> = Vec::new();
+        for &v in &wave {
+            let (val, _) = label[v].unwrap();
+            for &u in &preds[v] {
+                if label[u].is_some() {
+                    continue;
+                }
+                if val == Value::Loss {
+                    // Mover at u can move INTO a lost-for-opponent node: Win.
+                    label[u] = Some((Value::Win, d + 1));
+                    next.push(u);
+                } else {
+                    remaining[u] -= 1;
+                    if remaining[u] == 0 {
+                        // Every move leads to opponent wins: Loss, max-dtm by wave.
+                        label[u] = Some((Value::Loss, d + 1));
+                        next.push(u);
+                    }
+                }
+            }
+        }
+        wave = next;
+        d += 1;
+    }
+    let mut map = HashMap::with_capacity(n);
+    for (i, u) in nodes.iter().enumerate() {
+        if let Some(l) = label[i] {
+            map.insert(key(u), l);
+        }
+    }
+    map
+}
