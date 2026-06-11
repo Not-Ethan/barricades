@@ -1,0 +1,17 @@
+[cfg] board=6x5 walls=5 engine=ab threads=16 tt_mb=24576 race_mb=12288 t4=0 footprint=0 dsu_walls=1 shadow=1 progress_secs=600 pid=632548
+[hb] t=600s nodes=11946739456 (19911232/s) tt=207749152/536870912 (38.7%) race_entries=789634239
+[hb] t=1200s nodes=21949910262 (16671951/s) tt=347744076/536870912 (64.8%) race_entries=788721829
+[hb] t=1800s nodes=32825938246 (18126713/s) tt=425246616/536870912 (79.2%) race_entries=789165648
+W×H=6×5 walls=5  value=Win  threads=16  nodes=39397838608  t4_fires=0  t4_cutoffs=0  fp_attempts=0  fp_extracted=0  fp_prunes=0  fp_avg_bits=0.0  dsu_skips=4731883994  dsu_falls=10412661163  tt_entries=458347490  tt_capacity=536870912  tt_fill=85.4%  tt_bytes=17179869184  entry_size=32  race_entries=788749584  race_configs=2064223  time=2193.392s
+[shadow] legality-filter benchmark (writeup-vs-DSU); bucket = total placed walls
+[shadow] bucket     candidates       dsu_skip     dsu_fall        wu_skip      wu_fall       dsu_finds   dsu_unions
+[shadow]      0           3760           3760            0           3760            0           16168         2444
+[shadow]      1          32167          31757          410          29942         2225          146061        24780
+[shadow]      2         253254         244160         9094         213912        39342         1222602       231420
+[shadow]      3        1822996        1686875       136121        1369931       453065         9428028      1979520
+[shadow]      4       12480364       10752805      1727559        8187939      4292425        69746668     16152788
+[shadow]      5       74213800       56920135     17293665       41669382     32544418       452845992    115102296
+[shadow]      6      381519486      249536682    131982804      178381091    203138395      2578732038    717086790
+[shadow]      7     1614660384      865768457    748891927      578297603   1036362781     12297765792   3726892320
+[shadow]      8     4767277630     1703840469   3063437161     1262690417   3504587213     41850478182  13774322646
+[shadow]      9     8292281316     1843098894   6449182422     1454579282   6837702034     85242546708  30182851380

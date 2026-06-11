@@ -3,9 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.rules import legal_moves
-from agents.az.encoding import N_ACTIONS, N_PLANES, encode_planes, move_to_action
-
 
 class _ResBlock(nn.Module):
     def __init__(self, ch):
@@ -21,56 +18,50 @@ class _ResBlock(nn.Module):
         return F.relu(x + y)
 
 
-class QuoridorNet(nn.Module):
-    def __init__(self, channels=32, blocks=3):
+class SmallNet(nn.Module):
+    """Small CNN over NxN: policy (n_actions) + value (tanh) heads."""
+
+    def __init__(self, n_actions, channels=16, blocks=2):
         super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(N_PLANES, channels, 3, padding=1),
-            nn.BatchNorm2d(channels), nn.ReLU())
+        self.stem = nn.Sequential(nn.Conv2d(6, channels, 3, padding=1),
+                                  nn.BatchNorm2d(channels), nn.ReLU())
         self.body = nn.Sequential(*[_ResBlock(channels) for _ in range(blocks)])
         self.p_conv = nn.Sequential(nn.Conv2d(channels, 2, 1),
                                     nn.BatchNorm2d(2), nn.ReLU())
-        self.p_fc = nn.Linear(2 * 9 * 9, N_ACTIONS)
+        self.p_fc = nn.LazyLinear(n_actions)
         self.v_conv = nn.Sequential(nn.Conv2d(channels, 1, 1),
                                     nn.BatchNorm2d(1), nn.ReLU())
-        self.v_fc1 = nn.Linear(9 * 9, 64)
-        self.v_fc2 = nn.Linear(64, 1)
-        # d_-prefix: lets 2-head checkpoints load via strict=False (these params
-        # land in `missing`, never `unexpected`).
-        self.d_conv = nn.Sequential(nn.Conv2d(channels, 1, 1),
-                                    nn.BatchNorm2d(1), nn.ReLU())
-        self.d_fc1 = nn.Linear(9 * 9, 64)
-        self.d_fc2 = nn.Linear(64, 1)
+        self.v_fc1 = nn.LazyLinear(32)
+        self.v_fc2 = nn.Linear(32, 1)
 
     def forward(self, x):
         x = self.body(self.stem(x))
         p = self.p_fc(self.p_conv(x).flatten(1))
         v = self.v_conv(x).flatten(1)
         v = torch.tanh(self.v_fc2(F.relu(self.v_fc1(v))))
-        d = self.d_conv(x).flatten(1)
-        d = self.d_fc2(F.relu(self.d_fc1(d)))   # no squashing: regresses path_diff/norm
-        return p, v, d
+        return p, v
 
 
 class NetWrapper:
-    """Holds a net; predicts (priors over legal real moves, value) for a state."""
+    """Predicts (priors over legal moves, value) for a state."""
 
-    def __init__(self, net, device="cpu"):
+    def __init__(self, net, engine, encoder, device="cpu"):
         self.net = net.to(device)
+        self.e = engine
+        self.enc = encoder
         self.device = device
 
-    def predict(self, state):
+    def predict(self, s):
         self.net.eval()
-        planes = encode_planes(state)
+        planes = self.enc.encode_planes(s)
         x = torch.from_numpy(planes).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            logits, value, _dist = self.net(x)
+            logits, value = self.net(x)
         logits = logits[0].cpu().numpy()
-        legal = legal_moves(state)
-        idxs = np.array([move_to_action(m, state) for m in legal])
+        legal = self.e.legal_moves(s)
+        idxs = np.array([self.enc.move_to_action(m, s) for m in legal])
         sel = logits[idxs]
         sel = sel - sel.max()
         exp = np.exp(sel)
         probs = exp / exp.sum()
-        priors = {m: float(p) for m, p in zip(legal, probs)}
-        return priors, float(value.item())
+        return {m: float(p) for m, p in zip(legal, probs)}, float(value.item())
