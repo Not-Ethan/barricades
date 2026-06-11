@@ -5,5 +5,6 @@ pub mod dfpn;
 pub mod endgame;
 pub mod footprint;
 pub mod movegen;
+pub mod pv;
 pub mod solver;
 pub mod state;

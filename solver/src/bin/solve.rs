@@ -54,6 +54,7 @@ use std::time::Instant;
 
 use quoridor_solver::board::Board;
 use quoridor_solver::dfpn::DfpnSolver;
+use quoridor_solver::pv;
 use quoridor_solver::solver::Solver;
 
 fn parse_u8(s: &str) -> Option<u8> {
@@ -61,9 +62,17 @@ fn parse_u8(s: &str) -> Option<u8> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    // `--pv`: after solving, extract and print the canonical optimal line
+    // (value-preserving move at every ply, verified by warm-TT requeries).
+    let want_pv = if let Some(i) = args.iter().position(|a| a == "--pv") {
+        args.remove(i);
+        true
+    } else {
+        false
+    };
     if args.len() != 4 {
-        eprintln!("usage: {} <W> <H> <WALLS>", args.first().map_or("solve", |s| s.as_str()));
+        eprintln!("usage: {} <W> <H> <WALLS> [--pv]", args.first().map_or("solve", |s| s.as_str()));
         return ExitCode::FAILURE;
     }
     let (w, h, walls) = match (parse_u8(&args[1]), parse_u8(&args[2]), parse_u8(&args[3])) {
@@ -251,6 +260,27 @@ fn main() -> ExitCode {
                     r.dsu_unions
                 );
             }
+        }
+    }
+
+    if want_pv {
+        eprintln!("[pv] extracting the canonical optimal line (warm-TT requeries)...");
+        let (plies, winner) = pv::extract_pv(&board, &mut solver, &start, 400);
+        println!("\n=== canonical optimal line: {w}x{h} W{walls} ===");
+        println!("{}", pv::render(&board, &start));
+        for (i, ply) in plies.iter().enumerate() {
+            println!(
+                "ply {:>3}  P{}  {}   (value-to-move before: {:?})",
+                i + 1,
+                ply.mover,
+                pv::notate(&board, &ply.mv),
+                ply.value
+            );
+            println!("{}", pv::render(&board, &ply.after));
+        }
+        match winner {
+            Some(p) => println!("=== P{p} wins after {} plies ===", plies.len()),
+            None => println!("=== no termination within ply cap (draw line) ==="),
         }
     }
 
